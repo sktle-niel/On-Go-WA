@@ -216,6 +216,21 @@ export async function submitVerification(
   return dto;
 }
 
+/**
+ * Cheap ownership/state check before the request body is read, so a caller who
+ * does not own the request (or whose request is already decided) is turned away
+ * without the server buffering their upload. The authoritative check runs again
+ * inside the transaction in addVerificationDocument.
+ */
+export async function precheckDocumentUpload(db: Queryable, auth: AuthContext, requestId: string): Promise<void> {
+  const row = await db.queryOne<{ user_id: string; status: ApprovalStatusName }>(
+    `SELECT user_id, status::text AS status FROM account_requests WHERE id = $1`,
+    [requestId],
+  );
+  if (!row || row.user_id !== auth.userId) throw notFound('Verification request not found.');
+  if (row.status !== 'pending') throw conflict('This request has already been decided.');
+}
+
 export async function addVerificationDocument(
   db: Database,
   events: EventBus,
@@ -223,25 +238,53 @@ export async function addVerificationDocument(
   auth: AuthContext,
   requestId: string,
   upload: { body: Buffer; contentType: string; ext: string; fileName: string; kind: CredentialKindName; label: string },
+  maxDocuments: number,
 ): Promise<AccountVerificationRequestDto> {
-  const row = await fetchRequest(db, requestId);
-  // The owning mechanic attaches their own documents; anyone else gets 404.
-  if (!row || row.user_id !== auth.userId) throw notFound('Verification request not found.');
-  if (row.status !== 'pending') throw conflict('This request has already been decided.');
-
+  // Store first, then commit the row; if the commit is refused (not owner, not
+  // pending, or the per-request cap), delete the just-stored file so nothing is
+  // orphaned. The request row is locked so the cap check and insert are atomic
+  // against a second concurrent upload.
   const stored = await docs.storage.put({ kind: 'document', ext: upload.ext, body: upload.body });
-  await db.query(
-    `INSERT INTO account_request_documents
-       (request_id, s3_key, content_type, byte_size, sha256, kind, label, file_name)
-     VALUES ($1, $2, $3, $4, $5, $6::credential_kind, $7, $8)`,
-    [requestId, stored.key, upload.contentType, stored.bytes, stored.sha256, upload.kind, upload.label, upload.fileName],
-  );
+  try {
+    await db.withTransaction(async (tx) => {
+      const row = await tx.queryOne<{ user_id: string; status: ApprovalStatusName }>(
+        `SELECT user_id, status::text AS status FROM account_requests WHERE id = $1 FOR UPDATE`,
+        [requestId],
+      );
+      if (!row || row.user_id !== auth.userId) throw notFound('Verification request not found.');
+      if (row.status !== 'pending') throw conflict('This request has already been decided.');
+
+      const count = await tx.queryOne<{ n: number }>(
+        `SELECT count(*)::int AS n FROM account_request_documents WHERE request_id = $1`,
+        [requestId],
+      );
+      if ((count?.n ?? 0) >= maxDocuments) {
+        throw conflict(`A verification request may hold at most ${maxDocuments} documents.`);
+      }
+
+      await tx.query(
+        `INSERT INTO account_request_documents
+           (request_id, s3_key, content_type, byte_size, sha256, kind, label, file_name)
+         VALUES ($1, $2, $3, $4, $5, $6::credential_kind, $7, $8)`,
+        [requestId, stored.key, upload.contentType, stored.bytes, stored.sha256, upload.kind, upload.label, upload.fileName],
+      );
+    });
+  } catch (err) {
+    await docs.storage.delete(stored.key).catch(() => undefined);
+    throw err;
+  }
 
   const fresh = await fetchRequest(db, requestId);
   if (!fresh) throw new Error('request vanished after document upload');
   const dto = await toDto(db, docs, fresh);
-  await publishUpdate(events, dto, row.user_id);
+  await publishUpdate(events, dto, fresh.user_id);
   return dto;
+}
+
+/** Neutralises LIKE wildcards (%, _, \) in a caller's search term, so a search
+ *  is a literal substring match and cannot be turned into "match everything". */
+function escapeLike(term: string): string {
+  return term.replace(/[\\%_]/g, (char) => `\\${char}`);
 }
 
 export async function listVerificationRequests(
@@ -250,16 +293,17 @@ export async function listVerificationRequests(
   filters: { status?: ApprovalStatusName; escalatedOnly?: boolean; search?: string },
 ): Promise<AccountVerificationRequestDto[]> {
   const search = filters.search?.trim();
+  const like = search && search.length > 0 ? escapeLike(search) : null;
   const rows = await db.query<RequestRow>(
     `${SELECT_REQUEST}
       WHERE ($1::approval_status IS NULL OR ar.status = $1::approval_status)
         AND ($2::boolean IS NOT TRUE OR ar.escalated IS TRUE)
         AND ($3::text IS NULL OR
-             ar.name ILIKE '%' || $3 || '%' OR
-             ar.email ILIKE '%' || $3 || '%' OR
-             ar.user_number ILIKE '%' || $3 || '%')
+             ar.name ILIKE '%' || $3 || '%' ESCAPE '\\' OR
+             ar.email ILIKE '%' || $3 || '%' ESCAPE '\\' OR
+             ar.user_number ILIKE '%' || $3 || '%' ESCAPE '\\')
       ORDER BY ar.submitted_at DESC`,
-    [filters.status ?? null, filters.escalatedOnly ?? false, search && search.length > 0 ? search : null],
+    [filters.status ?? null, filters.escalatedOnly ?? false, like],
   );
   return Promise.all(rows.map((row) => toDto(db, docs, row)));
 }

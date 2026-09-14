@@ -114,6 +114,8 @@ test('the queue filters by status, escalation and search', async () => {
   const byName = (await q('search=Juan')).json();
   assert.ok(byName.length >= 1 && byName.every((r: { name: string }) => /juan/i.test(r.name)));
   assert.deepEqual((await q('search=nobody-matches-this')).json(), []);
+  // A bare '%' is a literal here, not a wildcard: it matches nothing, not all.
+  assert.deepEqual((await q('search=%25')).json(), []);
 });
 
 test('ownership: a mechanic sees only their own request', async () => {

@@ -31,6 +31,8 @@ const env: Record<string, string> = {
   LOGIN_MAX_FAILED_ATTEMPTS: '3',
   LOGIN_LOCKOUT_SECONDS: '60',
   WS_HEARTBEAT_SECONDS: '1',
+  // A small cap so the document-limit test is fast and deterministic.
+  MAX_DOCUMENTS_PER_REQUEST: '3',
   // PGlite runs Postgres on the main thread; on a slow CI runner the event loop
   // lag after migrations would make under-pressure answer 503 to the tests.
   LOAD_SHED_MAX_EVENT_LOOP_DELAY_MS: '0',

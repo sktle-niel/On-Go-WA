@@ -18,6 +18,7 @@ import {
   findVerificationRequest,
   listModerationActivity,
   listVerificationRequests,
+  precheckDocumentUpload,
   submitVerification,
   type CredentialKindName,
   type DecisionMeta,
@@ -104,18 +105,22 @@ export const verificationRoutes: FastifyPluginAsyncTypebox = async (app) => {
       },
     },
     async (request, reply) => {
+      const auth = currentAuth(request);
+      // Reject a non-owner or an already-decided request before reading the body.
+      await precheckDocumentUpload(app.db, auth, request.params.id);
       const upload = await consumeUpload(request, { maxBytes: app.config.MAX_DOCUMENT_BYTES, allowed: DOCUMENT_TYPES });
       const rawKind = upload.fields.kind as CredentialKindName | undefined;
       const kind: CredentialKindName = rawKind && CREDENTIAL_KINDS.includes(rawKind) ? rawKind : 'document';
       const label = (upload.fields.label ?? '').slice(0, 255);
-      const dto = await addVerificationDocument(app.db, app.events, docs(), currentAuth(request), request.params.id, {
-        body: upload.body,
-        contentType: upload.contentType,
-        ext: upload.ext,
-        fileName: upload.fileName,
-        kind,
-        label,
-      });
+      const dto = await addVerificationDocument(
+        app.db,
+        app.events,
+        docs(),
+        auth,
+        request.params.id,
+        { body: upload.body, contentType: upload.contentType, ext: upload.ext, fileName: upload.fileName, kind, label },
+        app.config.MAX_DOCUMENTS_PER_REQUEST,
+      );
       return reply.code(201).send(dto);
     },
   );

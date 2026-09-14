@@ -1,6 +1,7 @@
 import '../helpers/env.js';
 import assert from 'node:assert/strict';
 import { after, before, beforeEach, test } from 'node:test';
+import { loadConfig } from '../../src/config/env.js';
 import type { PlatformEvent } from '../../src/events/bus.js';
 import { bearer, createTestApp, createUser, signInAs, type TestContext } from '../helpers/app.js';
 
@@ -149,6 +150,22 @@ test('a PDF is accepted as a document', async () => {
   const res = await upload(request.token, `/api/v1/verification-requests/${request.id}/documents`, { kind: 'certification' }, { field: 'file', filename: 'cert.pdf', contentType: 'application/pdf', data: PDF });
   assert.equal(res.statusCode, 201, res.body);
   assert.equal(res.json().documents[0].kind, 'certification');
+});
+
+test('a request caps how many documents it can hold', async () => {
+  const request = await freshRequest();
+  const max = loadConfig().MAX_DOCUMENTS_PER_REQUEST;
+  for (let i = 0; i < max; i += 1) {
+    const res = await upload(request.token, `/api/v1/verification-requests/${request.id}/documents`, {}, { field: 'file', filename: `d${i}.png`, contentType: 'image/png', data: PNG });
+    assert.equal(res.statusCode, 201, res.body);
+  }
+  const over = await upload(request.token, `/api/v1/verification-requests/${request.id}/documents`, {}, { field: 'file', filename: 'over.png', contentType: 'image/png', data: PNG });
+  assert.equal(over.statusCode, 409);
+  assert.equal(over.json().error.code, 'conflict');
+
+  // The rejected upload left nothing behind: still exactly `max` documents.
+  const dto = (await ctx.app.inject({ method: 'GET', url: `/api/v1/verification-requests/${request.id}`, headers: bearer(request.token) })).json();
+  assert.equal(dto.documents.length, max);
 });
 
 test('the Sign In background is published, served publicly, and cleared', async () => {

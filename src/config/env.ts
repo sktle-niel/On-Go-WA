@@ -135,6 +135,9 @@ const schema = z
     UPLOAD_DIR: z.string().min(1).default('uploads'),
     /** How long a signed link to a private document stays valid. */
     FILE_URL_TTL_SECONDS: durationSeconds(600),
+    /** Most documents one verification request may hold, so a single account
+     *  cannot fill storage by uploading without bound. */
+    MAX_DOCUMENTS_PER_REQUEST: z.coerce.number().int().min(1).max(100).default(20),
     /** Upload ceilings, enforced on the bytes actually received. Documents
      *  accept images and PDF; the background accepts images only. */
     MAX_DOCUMENT_BYTES: z.coerce.number().int().min(1024).default(10 * 1024 * 1024),
