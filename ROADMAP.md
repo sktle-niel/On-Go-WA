@@ -117,7 +117,7 @@ not a superuser.
 
 ---
 
-## Step 4 — README for the front-end developer `[ ]`
+## Step 4 — README for the front-end developer `[~]` (API hand-off done via the integration guide; repo quick-start README pending)
 
 **Goal.** Someone who has never seen this repo can run it and integrate.
 
@@ -328,7 +328,7 @@ it lands with or right after the first slice of Step 10.
 
 ---
 
-## Step 10 — The jobs domain `[~]` (in progress; slice 1 done 2026-09-14)
+## Step 10 — The jobs domain `[~]` (in progress; slices 1–4 done 2026-09-14)
 
 **Goal.** Help requests, quotes, ETA, chat, reviews and QR payments move from
 the mobile app's memory to the server, so two devices see the same job.

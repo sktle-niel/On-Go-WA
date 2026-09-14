@@ -74,6 +74,11 @@ migrations/            forward-only SQL, one transaction per file, recorded in s
   004_contract_alignment.sql      can_change_background, document kind/label/file_name,
                                   points_policy, platform_appearance, revenue_ledger,
                                   password_reset_codes
+  005_verification_requests.sql   name/email/document_names + per-request number + one-pending index
+  006_service_requests.sql        location, surcharge, cancel/expiry stamps + one-active-per-client index
+  007_quotes.sql                  withdrawn_at, rejected_at, rating snapshot on quotes
+  008_accept.sql                  one-active-emergency-per-mechanic partial unique index
+  009_job_progress.sql            navigating/en_route/arrived/work_started/service_completed + timestamps
 scripts/               migrate, seed-admin, gen-secrets, export-openapi
 src/
   index.ts             entry: loads remote secrets, then imports bootstrap
@@ -95,14 +100,19 @@ src/
   plugins/security.ts  helmet, cors allowlist, cookie, rate-limit (Redis-aware), under-pressure
   plugins/errors.ts    the error envelope for AppError, validation, 4xx, 500
   plugins/docs.ts      @fastify/swagger + swagger-ui (/docs; off in production unless DOCS_ENABLED)
-  schemas/*.ts         TypeBox schemas mirroring on_go_shared DTOs
-  services/*.ts        auth, points, revenue business logic (pure functions over Queryable)
+  delivery/*.ts        password-reset code delivery: log driver + smtp (nodemailer); pure email template
+  storage/*.ts         Storage interface, disk driver, magic-byte validation, signed/public URL signing
+  utils/uploads.ts     multipart file validation (magic bytes, size), used by the upload routes
+  schemas/*.ts         TypeBox schemas mirroring on_go_shared DTOs (+ verification, moderators, jobs)
+  services/*.ts        auth, points, revenue, verification, moderators, jobs (functions over Queryable)
   routes/health.ts     /health/live, /health/ready
-  routes/v1/*.ts       one file per contract interface, registered under /api/v1
+  routes/v1/*.ts       one file per domain (auth, verification, moderators, revenue, appearance,
+                       points, events, files, jobs), registered under /api/v1
 test/
   helpers/             env, PGlite database, app factory, createUser/signInAs
   unit/                config, tokens, errors
-  integration/         migrations, health, auth, points, revenue, stubs, events
+  integration/         migrations, health, auth, points, revenue, stubs, events, verification,
+                       moderators, storage, delivery, jobs, quotes, accept, status
 Dockerfile             multi-stage, non-root, healthcheck; CMD node dist/src/index.js
 docker-compose.yml     postgres (default), redis (profile), api (profile full)
 .env.example           every setting, with comments
@@ -157,10 +167,19 @@ deploy/CLOUD_RUN.md    step-by-step trial deployment: Cloud Run + Neon + Secret 
   `listAuditLog` reads that one stream, so it already includes Step 5 queue
   decisions. Mutations publish `moderator.updated`. Note: the display `role`
   label is always "Moderator" (no column to persist a custom label).
+- Jobs domain (Step 10, in progress — migrations 006–009, not in on_go_shared yet):
+  slice 1 booking (`/service-requests`, one active request per client), slice 2
+  quotes (`MechanicQuote`, ETA cap, one live quote per mechanic, withdraw/reject),
+  slice 3 accept (the atomic claim: client-accept a quote and mechanic-accept an
+  emergency, both under a row lock so exactly one wins; one active emergency per
+  mechanic), slice 4 the status machine (navigating → en_route → arrived →
+  work_started → service_completed, idempotent, gated). Events
+  `service_request.created`/`.updated`, `quote.submitted`/`.updated`. Remaining
+  slices: payments + points, cancel + expiry sweep, reviews + leaderboard, chat.
 - Security plugins, docs, health routes.
 - Scripts: migrate, seed-admin, gen-secrets, export-openapi.
 - Dockerfile, docker-compose.yml, .env.example.
-- Test suite (10 files) on PGlite.
+- Test suite (18 files, 107 tests) on PGlite.
 
 ### Implemented since the last hosting snapshot
 
@@ -171,17 +190,18 @@ In background — (Step 7) are all live. Nothing answers `501` anymore.
 ### Verified (2026-09-11)
 
 - `npm run typecheck` clean (TypeScript 7.0.2).
-- `npm test` clean: 51 tests in 10 files on PGlite 0.5.8 (PostgreSQL 18.3
-  in WebAssembly). All four migrations apply there unchanged, including
-  `CREATE ROLE`, `AT TIME ZONE 'Asia/Manila'` and bytea parameters.
+- `npm test` clean: 107 tests on PGlite 0.5.8 (PostgreSQL 18.3 in WebAssembly),
+  re-verified 2026-09-14. Migrations 001–009 apply there unchanged, including
+  `CREATE ROLE`, partial unique indexes, `AT TIME ZONE 'Asia/Manila'` and bytea
+  parameters.
 - Schema files import `Type` from `@fastify/type-provider-typebox`, which
   re-exports the `typebox` v1.3 package the provider is built on. Do not
   add `@sinclair/typebox`; its `Static` types do not resolve through the
   provider.
 
 - `npm run build` clean; the built server boots without a database and
-  answers `/health/live` 200, `/health/ready` 503, `/docs/json` (23 paths)
-  and the 404 envelope (smoke-tested 2026-09-11).
+  answers `/health/live` 200, `/health/ready` 503, `/docs/json` (24 paths as
+  of Step 7) and the 404 envelope.
 
 ### Deployed (2026-09-14, staging)
 
@@ -280,12 +300,19 @@ real deployment needs a GCS driver (see `deploy/CLOUD_RUN.md` §9).
    `client` and `demo-mechanic` were local shortcuts and do not exist here.
 5. Access tokens expire in 10 minutes; clients must refresh on `token_expired`.
 6. `watch*` streams are one WebSocket with the protocol in
-   `src/routes/v1/events.ts`. Event names so far: `points_policy.updated`, `verification_request.updated`, `moderator.updated`, `platform_appearance.updated`.
+   `src/routes/v1/events.ts`. Event names so far: `points_policy.updated`, `verification_request.updated`, `moderator.updated`, `platform_appearance.updated`, `service_request.created`, `service_request.updated`, `quote.submitted`, `quote.updated`.
 7. `ModerationDecision.actorName`/`actorId` are accepted and ignored; the
    actor is the token holder.
-8. The jobs domain (help requests, quotes, ETA, chat, reviews, QR payments)
-   is not in the contract at all; the mobile app keeps it in memory. Tables
-   exist in 001 for when it moves server-side.
+8. **The jobs domain is moving server-side (Step 10, in progress) and is not in
+   `on_go_shared` yet — add it with the front-end dev.** Live so far: booking
+   (`ServiceRequest`), quotes (`MechanicQuote`), accept (client-accept + emergency
+   first-come), and the status machine. Routes are under `/service-requests` (see
+   the Routes table). Wire notes: `urgency` uses the capitalized
+   `Normal|Urgent|Emergency`; the surcharge (priority fee 0/50/100) is server-set
+   from urgency; ETA is in minutes, capped to the completion window (Emergency
+   12h, Urgent 3d, Normal none). Events: `service_request.created`/`.updated`,
+   `quote.submitted`/`.updated`. Still to come: payments + points, cancel/expiry,
+   reviews/leaderboard, chat.
 9. **`LocationApi` (added to `on_go_shared` upstream on 2026-09-13) is not served
    yet:** `POST /locations`, `GET /users/:userId/location`,
    `GET /mechanics/:mechanicId/nearby-jobs?radiusKm=`. Models `GeoPoint`,
