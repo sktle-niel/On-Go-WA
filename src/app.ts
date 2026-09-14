@@ -1,3 +1,4 @@
+import multipart from '@fastify/multipart';
 import type { TypeBoxTypeProvider } from '@fastify/type-provider-typebox';
 import websocket from '@fastify/websocket';
 import Fastify, { type FastifyBaseLogger } from 'fastify';
@@ -6,6 +7,7 @@ import type { AppConfig } from './config/env.js';
 import type { CodeDelivery } from './context.js';
 import type { Database } from './db/database.js';
 import type { EventBus } from './events/bus.js';
+import { createStorage, type Storage } from './storage/storage.js';
 import { logger } from './logging/logger.js';
 import { registerDocs } from './plugins/docs.js';
 import { registerErrorHandling } from './plugins/errors.js';
@@ -21,6 +23,7 @@ export interface AppDeps {
   events: EventBus;
   redis?: Redis;
   codeDelivery?: CodeDelivery;
+  storage?: Storage;
 }
 
 /**
@@ -58,11 +61,17 @@ export async function buildApp(deps: AppDeps) {
   base.decorate('db', deps.db);
   base.decorate('events', deps.events);
   base.decorate('codeDelivery', deps.codeDelivery ?? createLogCodeDelivery(config));
+  base.decorate('storage', deps.storage ?? createStorage(config));
 
   registerErrorHandling(base);
   await registerDocs(base, config);
   await registerSecurity(base, config, deps.redis);
   await base.register(websocket, { options: { maxPayload: 16 * 1024 } });
+  // Uploads: one file per request; the plugin caps bytes at the larger limit
+  // and each route enforces its own (documents vs the smaller background).
+  await base.register(multipart, {
+    limits: { fileSize: config.MAX_DOCUMENT_BYTES, files: 1, fields: 20 },
+  });
 
   // Same instance, typed for TypeBox schemas from here on.
   const app = base.withTypeProvider<TypeBoxTypeProvider>();

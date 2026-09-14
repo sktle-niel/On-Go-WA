@@ -7,6 +7,7 @@ import { loadConfig } from '../../src/config/env.js';
 import type { Database } from '../../src/db/database.js';
 import { createMemoryBus, type EventBus } from '../../src/events/bus.js';
 import { createTestDatabase } from './db.js';
+import { createMemoryStorage } from './storage.js';
 
 export interface TestContext {
   app: App;
@@ -28,6 +29,7 @@ export async function createTestApp(): Promise<TestContext> {
     config,
     db,
     events,
+    storage: createMemoryStorage(config),
     codeDelivery: {
       async deliverPasswordResetCode({ email, code }) {
         resetCodes.push({ email, code });

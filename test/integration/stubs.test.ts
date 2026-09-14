@@ -19,16 +19,14 @@ after(async () => {
   await ctx.close();
 });
 
-test('the appearance write side is still 501, behind its guards', async () => {
+test('the appearance write side is behind its guards', async () => {
+  // Anonymous and non-publisher callers are turned away before the handler,
+  // so this asserts the guard without mutating the stored appearance.
   const anonymous = await ctx.app.inject({ method: 'DELETE', url: '/api/v1/platform/appearance' });
   assert.equal(anonymous.statusCode, 401);
 
   const wrongRole = await ctx.app.inject({ method: 'DELETE', url: '/api/v1/platform/appearance', headers: bearer(clientToken) });
   assert.equal(wrongRole.statusCode, 403);
-
-  const stub = await ctx.app.inject({ method: 'DELETE', url: '/api/v1/platform/appearance', headers: bearer(adminToken) });
-  assert.equal(stub.statusCode, 501);
-  assert.equal(stub.json().error.code, 'not_implemented');
 });
 
 test('the appearance is public and empty until published', async () => {

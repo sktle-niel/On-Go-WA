@@ -2,6 +2,7 @@ import type { AuthContext } from './auth/guard.js';
 import type { AppConfig } from './config/env.js';
 import type { Database } from './db/database.js';
 import type { EventBus } from './events/bus.js';
+import type { Storage } from './storage/storage.js';
 
 /**
  * How a one-time code reaches a person. There is no mail or SMS provider yet;
@@ -22,6 +23,7 @@ declare module 'fastify' {
     db: Database;
     events: EventBus;
     codeDelivery: CodeDelivery;
+    storage: Storage;
   }
   interface FastifyRequest {
     auth?: AuthContext;

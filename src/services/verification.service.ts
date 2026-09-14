@@ -3,28 +3,33 @@ import { displayNameOf } from '../auth/users.js';
 import type { Database, Queryable } from '../db/database.js';
 import type { EventBus } from '../events/bus.js';
 import { recordSecurityEvent, SecurityEvent } from '../logging/audit.js';
-import { AppError, conflict, forbidden, isUniqueViolation, notFound } from '../utils/errors.js';
+import type { Storage } from '../storage/storage.js';
+import { conflict, forbidden, isUniqueViolation, notFound } from '../utils/errors.js';
 
 /**
  * Account verification — the mobile → console → mobile round trip.
  *
- * A mechanic files a request; a moderator or admin decides it; the mobile app
- * sees the verdict live on the event socket. Three rules shape everything here:
+ * A mechanic files a request and uploads their documents; a moderator or admin
+ * decides it; the mobile app sees the verdict live on the event socket. Three
+ * rules shape everything here:
  *
  *   - The actor of a decision is the token holder, never a body field.
  *   - Each action needs its own permission (approve / reject / escalate); an
  *     admin holds all three.
  *   - "Not yours" looks exactly like "does not exist": a mechanic asking for
  *     someone else's request gets 404, so an id cannot be probed.
+ *
+ * Every document's `uri` is a short-lived signed URL, minted per read, so a
+ * link copied out of the console stops working before long.
  */
 
 export type ModerationActionName = 'approved' | 'rejected' | 'escalated';
 export type AccountRoleName = 'mechanic' | 'business';
 export type ApprovalStatusName = 'pending' | 'approved' | 'rejected';
+export type CredentialKindName = 'mechanic_id' | 'document' | 'certification';
 
 export const VERIFICATION_REQUEST_UPDATED = 'verification_request.updated';
 
-/** Console roles receive every request event; the owner receives their own. */
 const CONSOLE_AUDIENCE = ['admin', 'moderator'] as const;
 
 const PERMISSION_BY_ACTION: Record<ModerationActionName, keyof AuthContext['permissions']> = {
@@ -36,7 +41,7 @@ const PERMISSION_BY_ACTION: Record<ModerationActionName, keyof AuthContext['perm
 export interface CredentialDocumentDto {
   id: string;
   ownerName: string;
-  kind: 'mechanic_id' | 'document' | 'certification';
+  kind: CredentialKindName;
   label: string;
   fileName: string;
   uri: string;
@@ -71,11 +76,16 @@ export interface ModerationActivityDto {
 }
 
 export interface DecisionMeta {
-  /** Raw client IP, stored in full on the audit rows an admin reads. */
   ip: string;
-  /** Keyed hash of the IP, for the security-event stream. */
   ipHash: Buffer;
   requestId: string;
+}
+
+/** Storage plus the signed-URL lifetime, threaded through so document URIs can
+ *  be minted wherever a request DTO is built. */
+export interface DocumentContext {
+  storage: Storage;
+  urlTtlSeconds: number;
 }
 
 interface RequestRow {
@@ -97,10 +107,15 @@ interface RequestRow {
   reviewer_email: string | null;
 }
 
-/**
- * Every read returns the full DTO shape. `documents` is empty until object
- * storage lands in Step 7; `documentNames` carries the labels submitted now.
- */
+interface DocumentRow {
+  id: string;
+  s3_key: string;
+  kind: CredentialKindName;
+  label: string;
+  file_name: string;
+  uploaded_at: Date;
+}
+
 const SELECT_REQUEST = `
   SELECT ar.id, ar.user_id, ar.user_number, ar.name, ar.email,
          ar.role::text AS role, ar.submitted_at,
@@ -111,7 +126,26 @@ const SELECT_REQUEST = `
     FROM account_requests ar
     LEFT JOIN users rv ON rv.id = ar.reviewer_id`;
 
-function toDto(row: RequestRow): AccountVerificationRequestDto {
+async function loadDocuments(db: Queryable, docs: DocumentContext, row: RequestRow): Promise<CredentialDocumentDto[]> {
+  const rows = await db.query<DocumentRow>(
+    `SELECT id, s3_key, kind::text AS kind, label, file_name, uploaded_at
+       FROM account_request_documents
+      WHERE request_id = $1
+      ORDER BY uploaded_at`,
+    [row.id],
+  );
+  return rows.map((doc) => ({
+    id: doc.id,
+    ownerName: row.name,
+    kind: doc.kind,
+    label: doc.label.length > 0 ? doc.label : doc.file_name,
+    fileName: doc.file_name,
+    uri: docs.storage.signedUrl(doc.s3_key, docs.urlTtlSeconds),
+    uploadedAt: doc.uploaded_at.toISOString(),
+  }));
+}
+
+async function toDto(db: Queryable, docs: DocumentContext, row: RequestRow): Promise<AccountVerificationRequestDto> {
   return {
     id: row.id,
     userNumber: row.user_number,
@@ -120,7 +154,7 @@ function toDto(row: RequestRow): AccountVerificationRequestDto {
     role: row.role,
     submittedAt: row.submitted_at.toISOString(),
     documentNames: row.document_names ?? [],
-    documents: [],
+    documents: await loadDocuments(db, docs, row),
     status: row.status,
     reason: row.reason,
     reviewedAt: row.reviewed_at ? row.reviewed_at.toISOString() : null,
@@ -150,9 +184,9 @@ async function publishUpdate(events: EventBus, dto: AccountVerificationRequestDt
 export async function submitVerification(
   db: Database,
   events: EventBus,
+  docs: DocumentContext,
   auth: AuthContext,
   input: { name: string; email: string; role: AccountRoleName; documentNames?: string[] },
-  meta: DecisionMeta,
 ): Promise<AccountVerificationRequestDto> {
   const documentNames = (input.documentNames ?? []).map((name) => name.trim()).filter((name) => name.length > 0);
 
@@ -171,20 +205,48 @@ export async function submitVerification(
     if (!fetched) throw new Error('verification request insert produced no row');
     row = fetched;
   } catch (err) {
-    // The partial unique index (one pending per user) surfaces here.
     if (isUniqueViolation(err)) {
       throw conflict('You already have a verification request awaiting review.');
     }
     throw err;
   }
 
-  const dto = toDto(row);
+  const dto = await toDto(db, docs, row);
   await publishUpdate(events, dto, auth.userId);
+  return dto;
+}
+
+export async function addVerificationDocument(
+  db: Database,
+  events: EventBus,
+  docs: DocumentContext,
+  auth: AuthContext,
+  requestId: string,
+  upload: { body: Buffer; contentType: string; ext: string; fileName: string; kind: CredentialKindName; label: string },
+): Promise<AccountVerificationRequestDto> {
+  const row = await fetchRequest(db, requestId);
+  // The owning mechanic attaches their own documents; anyone else gets 404.
+  if (!row || row.user_id !== auth.userId) throw notFound('Verification request not found.');
+  if (row.status !== 'pending') throw conflict('This request has already been decided.');
+
+  const stored = await docs.storage.put({ kind: 'document', ext: upload.ext, body: upload.body });
+  await db.query(
+    `INSERT INTO account_request_documents
+       (request_id, s3_key, content_type, byte_size, sha256, kind, label, file_name)
+     VALUES ($1, $2, $3, $4, $5, $6::credential_kind, $7, $8)`,
+    [requestId, stored.key, upload.contentType, stored.bytes, stored.sha256, upload.kind, upload.label, upload.fileName],
+  );
+
+  const fresh = await fetchRequest(db, requestId);
+  if (!fresh) throw new Error('request vanished after document upload');
+  const dto = await toDto(db, docs, fresh);
+  await publishUpdate(events, dto, row.user_id);
   return dto;
 }
 
 export async function listVerificationRequests(
   db: Queryable,
+  docs: DocumentContext,
   filters: { status?: ApprovalStatusName; escalatedOnly?: boolean; search?: string },
 ): Promise<AccountVerificationRequestDto[]> {
   const search = filters.search?.trim();
@@ -199,27 +261,25 @@ export async function listVerificationRequests(
       ORDER BY ar.submitted_at DESC`,
     [filters.status ?? null, filters.escalatedOnly ?? false, search && search.length > 0 ? search : null],
   );
-  return rows.map(toDto);
+  return Promise.all(rows.map((row) => toDto(db, docs, row)));
 }
 
-/**
- * A mechanic sees only their own request; a console role sees any. The two
- * "cannot read this" cases collapse to the same 404 so an id cannot be probed.
- */
 export async function findVerificationRequest(
   db: Queryable,
+  docs: DocumentContext,
   auth: AuthContext,
   id: string,
 ): Promise<AccountVerificationRequestDto> {
   const row = await fetchRequest(db, id);
   const isConsole = auth.role === 'admin' || auth.role === 'moderator';
   if (!row || (!isConsole && row.user_id !== auth.userId)) throw notFound('Verification request not found.');
-  return toDto(row);
+  return toDto(db, docs, row);
 }
 
 export async function decideVerification(
   db: Database,
   events: EventBus,
+  docs: DocumentContext,
   auth: AuthContext,
   id: string,
   input: { action: ModerationActionName; reason?: string | null },
@@ -241,8 +301,6 @@ export async function decideVerification(
 
   const reason = input.reason?.trim() || null;
 
-  // The row, the activity feed and the audit trail move together; the event
-  // and the security log are emitted after the commit.
   const updated = await db.withTransaction(async (tx) => {
     const row = await tx.queryOne<RequestRow>(`${SELECT_REQUEST} WHERE ar.id = $1 FOR UPDATE OF ar`, [id]);
     if (!row) throw notFound('Verification request not found.');
@@ -250,12 +308,7 @@ export async function decideVerification(
     if (input.action === 'escalated' && row.escalated) throw conflict('This request is already escalated.');
 
     if (input.action === 'escalated') {
-      // Escalation hands the request up to an admin: it stays pending, so it
-      // still shows in the queue, but flagged.
-      await tx.query(`UPDATE account_requests SET escalated = TRUE, reason = COALESCE($2, reason) WHERE id = $1`, [
-        id,
-        reason,
-      ]);
+      await tx.query(`UPDATE account_requests SET escalated = TRUE, reason = COALESCE($2, reason) WHERE id = $1`, [id, reason]);
     } else {
       await tx.query(
         `UPDATE account_requests
@@ -296,7 +349,7 @@ export async function decideVerification(
     metadata: { action: input.action },
   });
 
-  const dto = toDto(updated);
+  const dto = await toDto(db, docs, updated);
   await publishUpdate(events, dto, updated.user_id);
   return dto;
 }
@@ -332,6 +385,3 @@ export async function listModerationActivity(db: Queryable, limit: number): Prom
     reason: row.reason,
   }));
 }
-
-// Re-exported so a route can throw the same shape the service uses.
-export { AppError };

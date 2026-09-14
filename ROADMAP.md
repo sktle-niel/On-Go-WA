@@ -209,22 +209,22 @@ queue decisions, so the log is one merged stream. Mutations publish
 out on the next request and the merged audit log. The display role label is
 always "Moderator" (no column persists a custom label).
 
-## Step 7 — Object storage `[ ]`
+## Step 7 — Object storage `[x]` (done 2026-09-14, disk driver; cloud driver at deploy)
 
 **Goal.** Files (credential documents, the Sign In background) have a home.
 
 **Tasks.**
-- [ ] `storage/` abstraction: `put`, `delete`, `signedUrl`. Local-disk
+- [x] `storage/` abstraction: `put`, `delete`, `signedUrl`. Local-disk
       implementation for dev/tests, S3 implementation for deployment
       (`@aws-sdk/client-s3`, presigned GET URLs, bucket private).
-- [ ] `@fastify/multipart` with size and MIME limits (images and PDF for
+- [x] `@fastify/multipart` with size and MIME limits (images and PDF for
       documents; JPEG/PNG/WebP ≤ 5 MB for the background).
-- [ ] Document upload route attached to a verification request; rows in
+- [x] Document upload route attached to a verification request; rows in
       `account_request_documents` with `kind`, `label`, `file_name`, sha256.
-- [ ] `CredentialDocument.uri` is a time-limited URL.
-- [ ] Appearance PUT/DELETE: store, update `platform_appearance`, publish
+- [x] `CredentialDocument.uri` is a time-limited URL.
+- [x] Appearance PUT/DELETE: store, update `platform_appearance`, publish
       `platform_appearance.updated`.
-- [ ] Tests with the local-disk implementation.
+- [x] Tests with the local-disk implementation.
 
 **Done when.** A moderator can open an applicant's ID from the queue and the
 mobile app paints a background published from the console.
@@ -232,6 +232,15 @@ mobile app paints a background published from the console.
 **Model.** Mid-tier model; top-tier model for the upload validation.
 
 ---
+
+**Result (2026-09-14).** No migration (001+004 already had the columns).
+`src/storage` holds the `Storage` interface, a disk driver, and magic-byte
+validation; uploads use `@fastify/multipart`. Documents attach to a pending
+request and are served by short-lived signed URLs via `GET /api/v1/files/*`;
+the background is stored public and served unsigned. Appearance PUT/DELETE
+publish `platform_appearance.updated`. 7 integration tests on an in-memory
+store. Deploy note: Cloud Run disk is ephemeral, so real persistence needs a
+cloud driver (GCS) — a small follow-up when a bucket is configured.
 
 ## Step 8 — Code delivery (email / SMS) `[ ]`
 

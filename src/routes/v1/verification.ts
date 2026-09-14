@@ -2,6 +2,7 @@ import type { FastifyPluginAsyncTypebox } from '@fastify/type-provider-typebox';
 import { Type } from '@fastify/type-provider-typebox';
 import type { FastifyRequest } from 'fastify';
 import { CONSOLE_ROLES, currentAuth, requireAuth } from '../../auth/guard.js';
+import { DOCUMENT_TYPES } from '../../storage/storage.js';
 import { errorResponses, IdParams } from '../../schemas/common.js';
 import {
   AccountVerificationRequest,
@@ -12,14 +13,20 @@ import {
   SubmitVerificationBody,
 } from '../../schemas/verification.js';
 import {
+  addVerificationDocument,
   decideVerification,
   findVerificationRequest,
   listModerationActivity,
   listVerificationRequests,
   submitVerification,
+  type CredentialKindName,
   type DecisionMeta,
+  type DocumentContext,
 } from '../../services/verification.service.js';
 import { clientIp, clientIpHash } from '../../utils/ip.js';
+import { consumeUpload } from '../../utils/uploads.js';
+
+const CREDENTIAL_KINDS: readonly CredentialKindName[] = ['mechanic_id', 'document', 'certification'];
 
 /**
  * AccountVerificationApi — the mobile → console → mobile round trip.
@@ -34,6 +41,7 @@ export const verificationRoutes: FastifyPluginAsyncTypebox = async (app) => {
     ipHash: clientIpHash(request),
     requestId: request.id,
   });
+  const docs = (): DocumentContext => ({ storage: app.storage, urlTtlSeconds: app.config.FILE_URL_TTL_SECONDS });
 
   app.get(
     '/verification-requests',
@@ -49,7 +57,7 @@ export const verificationRoutes: FastifyPluginAsyncTypebox = async (app) => {
       },
     },
     async (request) =>
-      listVerificationRequests(app.db, {
+      listVerificationRequests(app.db, docs(), {
         status: request.query.status,
         escalatedOnly: request.query.escalatedOnly,
         search: request.query.search,
@@ -65,14 +73,49 @@ export const verificationRoutes: FastifyPluginAsyncTypebox = async (app) => {
         summary: 'File a verification request',
         description:
           'AccountVerificationApi.submit. Filed by the mechanic. One request may be pending per ' +
-          'account (409 on a second). Documents are attached in Step 7; the names are carried now.',
+          'account (409 on a second). Documents are attached with the documents route below.',
         security: [{ bearerAuth: [] }],
         body: SubmitVerificationBody,
         response: { 201: AccountVerificationRequest, ...errorResponses(400, 401, 403, 409) },
       },
     },
     async (request, reply) => {
-      const dto = await submitVerification(app.db, app.events, currentAuth(request), request.body, meta(request));
+      const dto = await submitVerification(app.db, app.events, docs(), currentAuth(request), request.body);
+      return reply.code(201).send(dto);
+    },
+  );
+
+  app.post(
+    '/verification-requests/:id/documents',
+    {
+      preHandler: [requireAuth({ roles: ['mechanic'] })],
+      schema: {
+        tags: ['Verification'],
+        summary: 'Attach a document to a verification request',
+        description:
+          'Addition (not in on_go_shared). multipart/form-data: one `file` part (JPEG/PNG/WebP/PDF, ' +
+          '≤ MAX_DOCUMENT_BYTES) plus optional `kind` (mechanic_id | document | certification) and ' +
+          '`label` fields, sent before the file. Only the owning mechanic, only while pending. ' +
+          'Returns the updated request with a signed `uri` for each document.',
+        security: [{ bearerAuth: [] }],
+        params: IdParams,
+        consumes: ['multipart/form-data'],
+        response: { 201: AccountVerificationRequest, ...errorResponses(400, 401, 403, 404, 409, 413) },
+      },
+    },
+    async (request, reply) => {
+      const upload = await consumeUpload(request, { maxBytes: app.config.MAX_DOCUMENT_BYTES, allowed: DOCUMENT_TYPES });
+      const rawKind = upload.fields.kind as CredentialKindName | undefined;
+      const kind: CredentialKindName = rawKind && CREDENTIAL_KINDS.includes(rawKind) ? rawKind : 'document';
+      const label = (upload.fields.label ?? '').slice(0, 255);
+      const dto = await addVerificationDocument(app.db, app.events, docs(), currentAuth(request), request.params.id, {
+        body: upload.body,
+        contentType: upload.contentType,
+        ext: upload.ext,
+        fileName: upload.fileName,
+        kind,
+        label,
+      });
       return reply.code(201).send(dto);
     },
   );
@@ -92,7 +135,7 @@ export const verificationRoutes: FastifyPluginAsyncTypebox = async (app) => {
         response: { 200: AccountVerificationRequest, ...errorResponses(401, 404) },
       },
     },
-    async (request) => findVerificationRequest(app.db, currentAuth(request), request.params.id),
+    async (request) => findVerificationRequest(app.db, docs(), currentAuth(request), request.params.id),
   );
 
   app.post(
@@ -116,6 +159,7 @@ export const verificationRoutes: FastifyPluginAsyncTypebox = async (app) => {
       decideVerification(
         app.db,
         app.events,
+        docs(),
         currentAuth(request),
         request.params.id,
         { action: request.body.action, reason: request.body.reason },

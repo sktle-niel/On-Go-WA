@@ -5,6 +5,7 @@ import { docsEnabled, loadConfig } from './config/env.js';
 import { createPgDatabase } from './db/database.js';
 import { createMemoryBus, createRedisBus } from './events/bus.js';
 import { logger } from './logging/logger.js';
+import { createStorage } from './storage/storage.js';
 
 /**
  * Wires real infrastructure to the app and listens. Runs after remote
@@ -23,8 +24,9 @@ export async function bootstrap(): Promise<void> {
   redis?.on('error', (err) => logger.error({ err: { message: err.message } }, 'redis error'));
 
   const events = config.REDIS_URL ? createRedisBus(config.REDIS_URL) : createMemoryBus();
+  const storage = createStorage(config);
 
-  const app = await buildApp({ config, db, events, redis });
+  const app = await buildApp({ config, db, events, redis, storage });
 
   let closing = false;
   const shutdown = async (signal: string): Promise<void> => {

@@ -202,4 +202,13 @@ Cloud Logging alerts, e.g. on `auth.token.reuse_detected`.
   rate limiting and events.
 - Postgres with backups and a private connection (Cloud SQL via the Cloud
   SQL connector, or Neon's paid tier).
+- **Object storage.** The `disk` driver writes to the container filesystem,
+  which on Cloud Run is EPHEMERAL: uploaded documents and the Sign In
+  background are lost on every new revision, restart or scaled instance. It is
+  fine to demonstrate the upload flow on a single instance, but before anyone
+  relies on it, swap in a cloud driver — Google Cloud Storage is the natural
+  fit here (the Cloud Run service account can access a bucket with no extra
+  credentials). The `Storage` interface does not change; only `createStorage`
+  gains a `gcs` branch, plus a bucket name in the environment. Until then, do
+  not tell mechanics their uploaded IDs are safely stored.
 - Alerting on readiness failures, 5xx rate and `auth.token.reuse_detected`.

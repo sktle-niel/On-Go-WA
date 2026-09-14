@@ -135,6 +135,14 @@ deploy/CLOUD_RUN.md    step-by-step trial deployment: Cloud Run + Neon + Secret 
   gated by its permission; admins hold all), ownership hides other mechanics'
   requests as 404, decisions write `moderator_activity` and `admin_audit_log` and
   publish `verification_request.updated` to the owner and the console.
+- Object storage (Step 7, no migration): a `Storage` abstraction (`src/storage`)
+  with a disk driver for dev/tests and a single-instance demo; uploads are
+  validated by magic bytes, not the declared type. Mechanics attach documents to
+  their pending request (`POST /verification-requests/:id/documents`), each
+  served by a short-lived signed URL through `GET /api/v1/files/*`; the Sign In
+  background (appearance PUT/DELETE) is stored under a `public/` prefix and
+  served without a signature. On Cloud Run the disk is ephemeral — a real
+  deployment swaps in a cloud driver (GCS); the interface does not change.
 - Moderator directory and audit log (Step 6, no migration): admin creates a
   moderator (role set at INSERT, temp password hashed), lists them with
   `actionsHandled`, replaces permissions (immediate, read from the DB each
@@ -148,9 +156,11 @@ deploy/CLOUD_RUN.md    step-by-step trial deployment: Cloud Run + Neon + Secret 
 - Dockerfile, docker-compose.yml, .env.example.
 - Test suite (10 files) on PGlite.
 
-### Stubbed — 501 `not_implemented`, full schema and guards in place
+### Implemented since the last hosting snapshot
 
-- `PlatformAppearanceApi`: PUT (multipart upload) and DELETE.
+Every contract endpoint now returns real data. Verification (Step 5), the
+moderator directory (Step 6), and object storage — document upload and the Sign
+In background — (Step 7) are all live. Nothing answers `501` anymore.
 
 ### Verified (2026-09-11)
 
@@ -221,7 +231,9 @@ deploy/CLOUD_RUN.md    step-by-step trial deployment: Cloud Run + Neon + Secret 
 | POST | /payments | reportCompletedPayment | client, mechanic | live |
 | GET | /revenue/summary | fetchSummary | admin | live |
 | GET | /platform/appearance | PlatformAppearanceApi.fetch | public | live |
-| PUT/DELETE | /platform/appearance | publishBackground / clearBackground | console + canChangeBackground | 501 |
+| PUT/DELETE | /platform/appearance | publishBackground / clearBackground | console + canChangeBackground | live |
+| POST | /verification-requests/:id/documents | (addition) attach a document | mechanic (owner), while pending | live |
+| GET | /files/* | (addition) serve a stored file | public (`public/`) or a valid signed URL | live |
 | GET | /platform/points-policy | PointsPolicyApi.fetch | public | live |
 | PUT | /platform/points-policy | PointsPolicyApi.update | admin | live |
 | POST | /locations | LocationApi.reportLocation | bearer | not registered (Step 10a) |
@@ -241,7 +253,7 @@ deploy/CLOUD_RUN.md    step-by-step trial deployment: Cloud Run + Neon + Secret 
    `client` and `demo-mechanic` were local shortcuts and do not exist here.
 5. Access tokens expire in 10 minutes; clients must refresh on `token_expired`.
 6. `watch*` streams are one WebSocket with the protocol in
-   `src/routes/v1/events.ts`. Event names so far: `points_policy.updated`, `verification_request.updated`, `moderator.updated`.
+   `src/routes/v1/events.ts`. Event names so far: `points_policy.updated`, `verification_request.updated`, `moderator.updated`, `platform_appearance.updated`.
 7. `ModerationDecision.actorName`/`actorId` are accepted and ignored; the
    actor is the token holder.
 8. The jobs domain (help requests, quotes, ETA, chat, reviews, QR payments)

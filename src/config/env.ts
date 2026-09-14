@@ -123,6 +123,19 @@ const schema = z
     /** Answer 503 above this event loop utilization (0–1). 0 disables. */
     LOAD_SHED_MAX_EVENT_LOOP_UTILIZATION: z.coerce.number().min(0).max(1).default(0.98),
 
+    // ── Object storage ───────────────────────────────────────────────────────
+    /** Where uploaded files live. `disk` is for dev/tests and a single-instance
+     *  demo; a cloud driver (GCS/S3) is swapped in for real deployments. */
+    STORAGE_DRIVER: z.enum(['disk']).default('disk'),
+    /** Directory the disk driver writes to (relative to the working dir). */
+    UPLOAD_DIR: z.string().min(1).default('uploads'),
+    /** How long a signed link to a private document stays valid. */
+    FILE_URL_TTL_SECONDS: durationSeconds(600),
+    /** Upload ceilings, enforced on the bytes actually received. Documents
+     *  accept images and PDF; the background accepts images only. */
+    MAX_DOCUMENT_BYTES: z.coerce.number().int().min(1024).default(10 * 1024 * 1024),
+    MAX_BACKGROUND_BYTES: z.coerce.number().int().min(1024).default(5 * 1024 * 1024),
+
     // ── Reporting ───────────────────────────────────────────────────────────
     /** The calendar the revenue ledger is bucketed by month in. */
     REVENUE_TIMEZONE: z.string().min(1).default('Asia/Manila'),
