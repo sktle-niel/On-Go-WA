@@ -1,6 +1,6 @@
 # On Go Backend — Project Memory
 
-Last updated: 2026-09-11. Keep this file honest: it is what the next session
+Last updated: 2026-09-14. Keep this file honest: it is what the next session
 plans against. Update the **Status** section whenever something is finished.
 
 ## What this is
@@ -314,7 +314,9 @@ Verified 2026-09-11 and to be kept true:
   Cloud Run runs as `618821603306-compute@developer.gserviceaccount.com`.
 - `.env.cloud` (git-ignored) holds the staging pepper and key for laptop-run
   migrate/seed; keep it in sync with Secret Manager.
-- This folder is not a git repository. Initialise one when the user asks.
+- Git repository since 2026-09-14; remote `origin` is
+  `https://github.com/sktle-niel/On-Go-WA.git`, branch `main`. Commits carry
+  only the owner's identity (no co-author or tool trailers).
 
 ## Commands
 

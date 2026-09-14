@@ -228,7 +228,7 @@ mobile app paints a background published from the console.
 **Goal.** Every change is checked, and a tagged build reaches a server.
 
 **Tasks.**
-- [ ] `git init`, `.gitignore` is already in place; first commit.
+- [x] `git init`, first commit pushed to `github.com/sktle-niel/On-Go-WA` (2026-09-14).
 - [ ] GitHub Actions: typecheck, test, build, Docker build on every push.
 - [ ] Infrastructure as code (Terraform or CDK): VPC, RDS Postgres 16 with
       `rds.force_ssl=1`, ElastiCache Redis, S3 bucket, Secrets Manager
