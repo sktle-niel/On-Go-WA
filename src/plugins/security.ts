@@ -71,8 +71,8 @@ export async function registerSecurity(
   });
 
   await app.register(underPressure, {
-    maxEventLoopDelay: 1000,
-    maxEventLoopUtilization: 0.98,
+    maxEventLoopDelay: config.LOAD_SHED_MAX_EVENT_LOOP_DELAY_MS,
+    maxEventLoopUtilization: config.LOAD_SHED_MAX_EVENT_LOOP_UTILIZATION,
     retryAfter: 2,
     // under-pressure instantiates this itself, so it needs the class.
     customError: ServiceBusyError,

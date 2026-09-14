@@ -18,7 +18,12 @@
     "seed:admin": "node --env-file-if-exists=.env --import tsx scripts/seed-admin.ts",
     "seed:admin:dist": "node dist/scripts/seed-admin.js",
     "secrets": "node --import tsx scripts/gen-secrets.ts",
-    "openapi": "node --import tsx scripts/export-openapi.ts"
+    "openapi": "node --import tsx scripts/export-openapi.ts",
+    "prepare": "node scripts/setup-hooks.mjs || exit 0",
+    "check:secrets": "node scripts/check-secrets.mjs --all",
+    "audit:deps": "npm audit --audit-level=high",
+    "verify": "npm run typecheck && npm test && npm run check:secrets && npm run audit:deps",
+    "test:ci": "node --import tsx --test --test-reporter=spec --test-reporter-destination=stdout --test-reporter=./scripts/test-annotations.mjs --test-reporter-destination=stdout \"test/**/*.test.ts\""
   },
   "dependencies": {
     "@aws-sdk/client-secrets-manager": "^3.1130.0",

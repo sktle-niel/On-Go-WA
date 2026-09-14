@@ -1,3 +1,5 @@
+import { randomBytes } from 'node:crypto';
+
 /**
  * Test configuration. Imported FIRST by every test file, before any module
  * that reads config at load time (the logger does), so the values are in the
@@ -5,12 +7,17 @@
  *
  * Argon2 parameters are the OWASP minimum here so a test run does not spend
  * its time hashing; production defaults are higher (see config/env.ts).
+ *
+ * The signing key and pepper are generated fresh each run rather than written
+ * as literals, so no secret-shaped string ever sits in the source for a
+ * scanner to flag. Tokens are minted and verified within the same run, so a
+ * per-run value is all the tests need.
  */
 const env: Record<string, string> = {
   NODE_ENV: 'test',
   LOG_LEVEL: 'silent',
-  JWT_SIGNING_KEY: 'test-signing-key-0123456789abcdef0123456789abcdef',
-  PASSWORD_PEPPER: 'test-pepper-0123456789abcdef',
+  JWT_SIGNING_KEY: randomBytes(48).toString('base64url'),
+  PASSWORD_PEPPER: randomBytes(24).toString('base64url'),
   PGHOST: 'localhost',
   PGDATABASE: 'ongo_test',
   PGUSER: 'test',
@@ -24,6 +31,10 @@ const env: Record<string, string> = {
   LOGIN_MAX_FAILED_ATTEMPTS: '3',
   LOGIN_LOCKOUT_SECONDS: '60',
   WS_HEARTBEAT_SECONDS: '1',
+  // PGlite runs Postgres on the main thread; on a slow CI runner the event loop
+  // lag after migrations would make under-pressure answer 503 to the tests.
+  LOAD_SHED_MAX_EVENT_LOOP_DELAY_MS: '0',
+  LOAD_SHED_MAX_EVENT_LOOP_UTILIZATION: '0',
 };
 
 for (const [key, value] of Object.entries(env)) {

@@ -172,6 +172,14 @@ deploy/CLOUD_RUN.md    step-by-step trial deployment: Cloud Run + Neon + Secret 
   (console surface: cookie set, no refresh token in body), `/me`, WebSocket
   auth → `ready`.
 
+### Repository hygiene (2026-09-14)
+
+- `SECURITY.md`; `.githooks/` (pre-commit secret scan, pre-push verify) enabled
+  by `npm install`; `.github/workflows/ci.yml`; `.gitleaks.toml`;
+  `scripts/check-secrets.mjs`. Local dev credentials moved out of
+  `docker-compose.yml` into `.env`; every placeholder that looked like a secret
+  replaced. `npm audit`: 0 vulnerabilities.
+
 ### Not yet verified
 
 - The Redis code path (no Redis locally).
@@ -283,6 +291,10 @@ deploy/CLOUD_RUN.md    step-by-step trial deployment: Cloud Run + Neon + Secret 
   DDL at deploy time only.
 - Security-relevant diffs (auth, sessions, guards, SQL grants, crypto) get a
   top-model review before merge.
+- **Every commit and push is checked.** `.githooks/pre-commit` runs the secret
+  scanner on staged files; `.githooks/pre-push` runs it over all tracked files,
+  then typecheck, tests and `npm audit --audit-level=high`; CI repeats them and
+  adds gitleaks. `--no-verify` is never used. Details in SECURITY.md.
 
 ### Secrets and environment files
 
@@ -308,6 +320,24 @@ Verified 2026-09-11 and to be kept true:
   rotating the pepper invalidates every stored hash.
 - Cloud Run receives secrets through `--set-secrets`, never through
   `--set-env-vars` and never baked into the image.
+- **Placeholders must not look like secrets.** In `.env.example`, docs and
+  tests a value is empty or `<described in angle brackets>`; never `key-…`, a
+  random-looking string, or a word like `ongo` in a password field.
+  GitGuardian flagged four such placeholders in the initial commit
+  (2026-09-14); none was real, all were replaced.
+
+### Branches and checks
+
+- `main` is what is deployed; `development` is the working branch; short-lived
+  `feature/…`, `fix/…`, `security/…` branches merge into `development` by pull
+  request, and `development` merges into `main` by pull request once CI is
+  green.
+- Local hooks (`npm install` enables them via `scripts/setup-hooks.mjs`):
+  pre-commit secret scan, pre-push verify. CI (`.github/workflows/ci.yml`):
+  `npm ci`, typecheck, tests, build, `npm audit --audit-level=high`, the
+  project scanner (`scripts/check-secrets.mjs`), gitleaks (`.gitleaks.toml`).
+- GitHub settings to keep on (owner): secret scanning with push protection;
+  branch protection on `main` requiring a pull request and the CI check.
 
 ### Working rules (coding sessions)
 
@@ -315,6 +345,8 @@ Verified 2026-09-11 and to be kept true:
   committed by the owner's git identity (`sktle-niel`). No `Co-Authored-By`,
   session or tool trailers in commit messages or PR descriptions; no
   development-tool or model-vendor names in committed files.
+- **Before every commit and push:** read the diff for anything secret-like,
+  run `npm run verify`, and let the hooks run. Never `--no-verify`.
 - **No subagents or multi-agent workflows without the user's approval.**
   Work solo with Read/Grep/Bash unless a fan-out is explicitly approved.
 - **Save tokens.** Lean replies, one feature per session, `/compact` when the
@@ -354,7 +386,8 @@ Verified 2026-09-11 and to be kept true:
   migrate/seed; keep it in sync with Secret Manager.
 - Git repository since 2026-09-14; remote `origin` is
   `https://github.com/sktle-niel/On-Go-WA.git`, branch `main`. Commits carry
-  only the owner's identity (no co-author or tool trailers).
+  only the owner's identity (no co-author or tool trailers). Working branch:
+  `development`; `main` is what is deployed.
 - The front-end repo `https://github.com/sktle-niel/On-Go.git` is cloned at
   `../On-Go` on branch `master` (synced 2026-09-14; a local-only branch
   `local-snapshot` keeps the pre-sync copy). The admin console moved upstream
@@ -369,8 +402,9 @@ npm test             # PGlite, no services needed
 npm run build        # dist/src and dist/scripts
 npm start            # node dist/src/index.js
 npm run migrate      # applies migrations/ to the configured Postgres
-npm run seed:admin -- --email … --password … --name …
+npm run seed:admin   # reads SEED_ADMIN_EMAIL / SEED_ADMIN_PASSWORD / SEED_ADMIN_NAME from .env
 npm run secrets      # prints fresh JWT_SIGNING_KEY and PASSWORD_PEPPER
 npm run openapi      # writes openapi/openapi.json
+npm run verify       # typecheck + tests + secret scan + npm audit (what the git hooks run)
 docker compose up -d # local PostgreSQL
 ```

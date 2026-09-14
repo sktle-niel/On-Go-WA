@@ -1,0 +1,43 @@
+name: CI
+
+on:
+  push:
+    branches: [main, development]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    name: Typecheck, test, build, audit, secret scan
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0 # gitleaks scans the commits, not just the tree
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 24
+          cache: npm
+
+      - run: npm ci
+
+      - run: npm run typecheck
+
+      - name: Tests (failures become annotations)
+        run: npm run test:ci
+
+      - run: npm run build
+
+      - name: Dependency audit (high and critical fail the build)
+        run: npm audit --audit-level=high
+
+      - name: Secret scan (project rules)
+        run: node scripts/check-secrets.mjs --all
+
+      - name: Secret scan (gitleaks, commit history)
+        uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

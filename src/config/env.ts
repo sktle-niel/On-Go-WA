@@ -115,6 +115,14 @@ const schema = z
     MAX_REQUEST_BODY_BYTES: z.coerce.number().int().min(1024).default(256 * 1024),
     WS_HEARTBEAT_SECONDS: durationSeconds(30),
 
+    // ── Load shedding (@fastify/under-pressure) ───────────────────────────
+    /** Answer 503 while the event loop lags more than this (ms). 0 disables.
+     *  Tests set 0: PGlite runs Postgres on the main thread and a slow CI
+     *  runner would otherwise shed the very requests under test. */
+    LOAD_SHED_MAX_EVENT_LOOP_DELAY_MS: z.coerce.number().int().min(0).default(1000),
+    /** Answer 503 above this event loop utilization (0–1). 0 disables. */
+    LOAD_SHED_MAX_EVENT_LOOP_UTILIZATION: z.coerce.number().min(0).max(1).default(0.98),
+
     // ── Reporting ───────────────────────────────────────────────────────────
     /** The calendar the revenue ledger is bucketed by month in. */
     REVENUE_TIMEZONE: z.string().min(1).default('Asia/Manila'),

@@ -1,0 +1,14 @@
+#!/bin/sh
+# Runs before anything leaves this machine: secret scan of every tracked file,
+# typecheck, the test suite, and the dependency audit. Takes a minute or two.
+# Do not bypass with --no-verify; see SECURITY.md.
+set -e
+echo "pre-push: secret scan"
+node scripts/check-secrets.mjs --all
+echo "pre-push: typecheck"
+npm run --silent typecheck
+echo "pre-push: tests"
+npm test --silent
+echo "pre-push: dependency audit (high and critical block the push)"
+npm audit --audit-level=high
+echo "pre-push: all checks passed"

@@ -34,14 +34,17 @@ Create `.env.cloud` in this folder (it is git-ignored) with the Neon values:
 ```
 NODE_ENV=development
 LOG_LEVEL=info
-JWT_SIGNING_KEY=any-32-char-placeholder-only-for-scripts-xxxxxxxxxx
-PASSWORD_PEPPER=any-16-char-placeholder
+JWT_SIGNING_KEY=<the value printed by npm run secrets>
+PASSWORD_PEPPER=<the value printed by npm run secrets>
 PGHOST=ep-xxxx.ap-southeast-1.aws.neon.tech
 PGPORT=5432
 PGDATABASE=neondb
 PGUSER=neondb_owner
-PGPASSWORD=your-neon-password
+PGPASSWORD=<from the Neon connection details>
 PGSSLMODE=verify-full
+SEED_ADMIN_EMAIL=<you@example.com>
+SEED_ADMIN_PASSWORD=<at least 12 characters>
+SEED_ADMIN_NAME=<Display Name>
 ```
 
 Neon's certificate chains to a public root, so no `PG_CA_CERT` is needed.
@@ -49,9 +52,11 @@ Then:
 
 ```bash
 node --env-file=.env.cloud --import tsx scripts/migrate.ts
-node --env-file=.env.cloud --import tsx scripts/seed-admin.ts \
-  --email admin@yourdomain.com --password 'a long admin password' --name 'Ada Admin'
+node --env-file=.env.cloud --import tsx scripts/seed-admin.ts   # reads SEED_ADMIN_* from .env.cloud
 ```
+
+The admin password goes through the env file on purpose: a password typed on
+the command line lands in the shell history.
 
 Expected: `applied: 001_init, 002_roles_least_privilege, 003_audit_actor_role_and_ip, 004_contract_alignment`
 and `created admin admin@yourdomain.com (…)`.
@@ -147,8 +152,8 @@ laptop. Get the image that the last deploy built:
 IMAGE=$(gcloud run services describe ongo-api --format='value(spec.template.spec.containers[0].image)')
 gcloud run jobs create ongo-migrate --image "$IMAGE" --region asia-southeast1 \
   --command node --args dist/scripts/migrate.js \
-  --set-env-vars "NODE_ENV=production,PGHOST=ep-xxxx.ap-southeast-1.aws.neon.tech,PGDATABASE=neondb,PGUSER=neondb_owner,PGSSLMODE=verify-full,JWT_SIGNING_KEY=unused-by-migrations-but-config-requires-32-chars,PASSWORD_PEPPER=unused-by-migrations" \
-  --set-secrets "PGPASSWORD=ongo-pg-password:latest"
+  --set-env-vars "NODE_ENV=production,PGHOST=ep-xxxx.ap-southeast-1.aws.neon.tech,PGDATABASE=neondb,PGUSER=neondb_owner,PGSSLMODE=verify-full,LOG_LEVEL=info,CORS_ALLOW_LOCALHOST=true" \
+  --set-secrets "JWT_SIGNING_KEY=ongo-jwt-signing-key:latest,PASSWORD_PEPPER=ongo-password-pepper:latest,PGPASSWORD=ongo-pg-password:latest"
 gcloud run jobs execute ongo-migrate --wait
 ```
 

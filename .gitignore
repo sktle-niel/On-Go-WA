@@ -8,3 +8,18 @@ coverage/
 uploads/
 openapi/openapi.json
 .DS_Store
+
+# Key material and credential files: never committed (the pre-commit hook refuses them too)
+*.pem
+*.key
+*.p12
+*.pfx
+*.jks
+*.keystore
+*.ppk
+id_rsa*
+id_ed25519*
+credentials.json
+service-account*.json
+client_secret*.json
+.npmrc
