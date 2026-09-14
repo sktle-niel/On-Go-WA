@@ -135,13 +135,19 @@ GRANT SELECT ON ALL TABLES IN SCHEMA public TO ongo_readonly;
 
 -- == Defaults for future tables =============================================
 -- Without these, a table created by a later migration silently has no grants
--- and the API fails at runtime instead of at deploy time.
+-- and the API fails at runtime instead of at deploy time. They apply to the
+-- role running this migration, i.e. the schema owner, whoever that is: a
+-- dedicated ongo_migrator login on AWS, or the provider's owner account on
+-- Neon / Supabase. (`FOR ROLE ongo_migrator` needs superuser or INHERIT
+-- membership, which a managed owner account lacks, and would not cover the
+-- tables that account creates.) Later migrations still grant explicitly; see
+-- the DO block at the end of 004.
 
-ALTER DEFAULT PRIVILEGES FOR ROLE ongo_migrator IN SCHEMA public
+ALTER DEFAULT PRIVILEGES IN SCHEMA public
     GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO ongo_app;
-ALTER DEFAULT PRIVILEGES FOR ROLE ongo_migrator IN SCHEMA public
+ALTER DEFAULT PRIVILEGES IN SCHEMA public
     GRANT SELECT ON TABLES TO ongo_readonly;
-ALTER DEFAULT PRIVILEGES FOR ROLE ongo_migrator IN SCHEMA public
+ALTER DEFAULT PRIVILEGES IN SCHEMA public
     GRANT USAGE, SELECT ON SEQUENCES TO ongo_app;
 
 -- == Force TLS ==============================================================
