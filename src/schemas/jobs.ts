@@ -66,3 +66,29 @@ export const ListRequestsQuery = Type.Object({
   scope: Type.Optional(StringEnum(['open', 'mine'])),
   urgency: Type.Optional(Urgency),
 });
+
+/** MechanicQuote (the wire form). Emergency jobs are accepted directly, not
+ *  quoted, so quotes are only for Normal / Urgent requests. */
+export const MechanicQuote = Type.Object({
+  id: Uuid,
+  requestId: Uuid,
+  mechanicId: Uuid,
+  mechanicName: Type.String(),
+  /** The mechanic's price for the job, in pesos. */
+  price: Type.Number(),
+  /** Promised time to REACH the client, in minutes; the client counts down against it. */
+  etaMinutes: Type.Integer(),
+  rating: Type.Number(),
+  accepted: Type.Boolean(),
+  withdrawnAt: Nullable(DateTime),
+  rejectedAt: Nullable(DateTime),
+  createdAt: DateTime,
+});
+
+export const SubmitQuoteBody = Type.Object(
+  {
+    price: Type.Number({ minimum: 0 }),
+    etaMinutes: Type.Integer({ minimum: 1, maximum: 60 * 24 * 14 }),
+  },
+  { additionalProperties: false },
+);

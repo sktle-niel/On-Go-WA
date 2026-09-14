@@ -349,6 +349,14 @@ the mobile app's memory to the server, so two devices see the same job.
 **Done when.** A client on one phone and a mechanic on another complete a job
 end to end through the API.
 
+**Slice 2 done (2026-09-14): quotes.** Migration 007 adds withdrawn_at,
+rejected_at and a rating snapshot to quotes. An approved mechanic (verification
+approved) sends a quote on a pending Normal/Urgent request: one live quote per
+mechanic, the ETA capped to the completion window, a rejected mechanic barred
+from re-quoting, a withdrawn quote re-sendable. The client rejects a specific
+quote; the mechanic withdraws their own. Events quote.submitted / quote.updated.
+7 tests. Emergency stays accept-only (slice 3).
+
 **Slice 1 done (2026-09-14): service requests (booking).** Migration 006 adds
 location, surcharge and the cancel/expiry stamps to service_requests, plus a
 partial unique index for one active request per client. `jobs.service.ts` and

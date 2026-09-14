@@ -259,6 +259,10 @@ real deployment needs a GCS driver (see `deploy/CLOUD_RUN.md` §9).
 | GET | /service-requests | (addition) list open / mine | bearer | live |
 | GET | /service-requests/:id | (addition) one request | owner / mechanic / console | live |
 | POST | /service-requests/:id/cancel | (addition) cancel own pending | client | live |
+| POST | /service-requests/:id/quotes | (addition) send a quote | mechanic (approved) | live |
+| GET | /service-requests/:id/quotes | (addition) list quotes | owner / mechanic / console | live |
+| POST | /service-requests/:id/quotes/withdraw | (addition) withdraw own quote | mechanic | live |
+| POST | /service-requests/:id/quotes/:quoteId/reject | (addition) reject a quote | client (owner) | live |
 | WS | /events | every `watch*` | first-frame auth | live |
 | GET | /health/live, /health/ready | — | public | live |
 

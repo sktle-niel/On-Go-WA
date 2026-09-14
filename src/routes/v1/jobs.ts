@@ -1,19 +1,27 @@
 import type { FastifyPluginAsyncTypebox } from '@fastify/type-provider-typebox';
 import { Type } from '@fastify/type-provider-typebox';
 import { currentAuth, requireAuth } from '../../auth/guard.js';
-import { errorResponses, IdParams } from '../../schemas/common.js';
+import { errorResponses, IdParams, Uuid } from '../../schemas/common.js';
 import {
   CancelServiceRequestBody,
   CreateServiceRequestBody,
   ListRequestsQuery,
+  MechanicQuote,
   ServiceRequest,
+  SubmitQuoteBody,
 } from '../../schemas/jobs.js';
 import {
   cancelServiceRequest,
   createServiceRequest,
   getServiceRequest,
+  listQuotes,
   listServiceRequests,
+  rejectQuote,
+  submitQuote,
+  withdrawQuote,
 } from '../../services/jobs.service.js';
+
+const QuoteIdParams = Type.Object({ id: Uuid, quoteId: Uuid });
 
 /**
  * The jobs domain — slice 1: service requests (booking). Not in on_go_shared
@@ -102,5 +110,79 @@ export const jobRoutes: FastifyPluginAsyncTypebox = async (app) => {
     },
     async (request) =>
       cancelServiceRequest(app.db, app.events, currentAuth(request), request.params.id, request.body.reason ?? null),
+  );
+
+  // ── Quotes (Normal / Urgent requests; Emergency is accepted directly) ──────
+
+  app.post(
+    '/service-requests/:id/quotes',
+    {
+      preHandler: [requireAuth({ roles: ['mechanic'] })],
+      schema: {
+        tags: ['Jobs'],
+        summary: 'Send a quote',
+        description:
+          'Addition. An approved mechanic quotes a pending Normal/Urgent request: price and ETA in ' +
+          'minutes. One live quote per mechanic per request; the ETA must fit the completion window; ' +
+          'a mechanic the client rejected cannot re-quote; a withdrawn quote may be sent again.',
+        security: [{ bearerAuth: [] }],
+        params: IdParams,
+        body: SubmitQuoteBody,
+        response: { 201: MechanicQuote, ...errorResponses(400, 401, 403, 404, 409) },
+      },
+    },
+    async (request, reply) => {
+      const dto = await submitQuote(app.db, app.events, currentAuth(request), request.params.id, request.body);
+      return reply.code(201).send(dto);
+    },
+  );
+
+  app.get(
+    '/service-requests/:id/quotes',
+    {
+      preHandler: [requireAuth()],
+      schema: {
+        tags: ['Jobs'],
+        summary: 'List quotes on a request',
+        description:
+          'Addition. The client owner sees live offers; a mechanic sees their own quote; console sees all.',
+        security: [{ bearerAuth: [] }],
+        params: IdParams,
+        response: { 200: Type.Array(MechanicQuote), ...errorResponses(401, 404) },
+      },
+    },
+    async (request) => listQuotes(app.db, currentAuth(request), request.params.id),
+  );
+
+  app.post(
+    '/service-requests/:id/quotes/withdraw',
+    {
+      preHandler: [requireAuth({ roles: ['mechanic'] })],
+      schema: {
+        tags: ['Jobs'],
+        summary: 'Withdraw your quote',
+        description: 'Addition. The mechanic takes their own live, unaccepted quote back; they may quote again after.',
+        security: [{ bearerAuth: [] }],
+        params: IdParams,
+        response: { 200: MechanicQuote, ...errorResponses(401, 403, 404) },
+      },
+    },
+    async (request) => withdrawQuote(app.db, app.events, currentAuth(request), request.params.id),
+  );
+
+  app.post(
+    '/service-requests/:id/quotes/:quoteId/reject',
+    {
+      preHandler: [requireAuth({ roles: ['client'] })],
+      schema: {
+        tags: ['Jobs'],
+        summary: 'Reject a quote',
+        description: 'Addition. The request owner turns a live quote down; that mechanic cannot re-quote the job.',
+        security: [{ bearerAuth: [] }],
+        params: QuoteIdParams,
+        response: { 200: MechanicQuote, ...errorResponses(401, 403, 404) },
+      },
+    },
+    async (request) => rejectQuote(app.db, app.events, currentAuth(request), request.params.id, request.params.quoteId),
   );
 };

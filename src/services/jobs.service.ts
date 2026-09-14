@@ -2,7 +2,7 @@ import type { AuthContext } from '../auth/guard.js';
 import { displayNameOf } from '../auth/users.js';
 import type { Database, Queryable } from '../db/database.js';
 import type { EventBus } from '../events/bus.js';
-import { conflict, isUniqueViolation, notFound } from '../utils/errors.js';
+import { badRequest, conflict, forbidden, isUniqueViolation, notFound } from '../utils/errors.js';
 
 /**
  * The jobs domain — slice 1: service requests (booking).
@@ -23,12 +23,19 @@ export type RequestStatusName = 'pending' | 'matched' | 'completed' | 'cancelled
 
 export const SERVICE_REQUEST_CREATED = 'service_request.created';
 export const SERVICE_REQUEST_UPDATED = 'service_request.updated';
+export const QUOTE_SUBMITTED = 'quote.submitted';
+export const QUOTE_UPDATED = 'quote.updated';
 
 const MECHANIC_AUDIENCE = ['mechanic'] as const;
 
 /** ONGO's priority fee per urgency, in pesos. Platform revenue, fixed on the
  *  request at creation. */
 const SURCHARGE: Record<UrgencyName, number> = { Normal: 0, Urgent: 50, Emergency: 100 };
+
+/** How long an urgency gives the mechanic to COMPLETE, in minutes. A quoted
+ *  ETA (time to arrive) must fit inside what is left of it. Normal has no
+ *  window — its timing is whatever ETA the mechanic promises. */
+const WINDOW_MINUTES: Partial<Record<UrgencyName, number>> = { Emergency: 12 * 60, Urgent: 3 * 24 * 60 };
 
 export interface ServiceRequestDto {
   id: string;
@@ -240,5 +247,218 @@ export async function cancelServiceRequest(
   if (!row) throw new Error('request vanished after cancel');
   const dto = toDto(row);
   await events.publish({ name: SERVICE_REQUEST_UPDATED, data: dto, audience: { roles: MECHANIC_AUDIENCE, userIds: [auth.userId] } });
+  return dto;
+}
+
+// ─── Slice 2: quotes ────────────────────────────────────────────────────────
+
+export interface MechanicQuoteDto {
+  id: string;
+  requestId: string;
+  mechanicId: string;
+  mechanicName: string;
+  price: number;
+  etaMinutes: number;
+  rating: number;
+  accepted: boolean;
+  withdrawnAt: string | null;
+  rejectedAt: string | null;
+  createdAt: string;
+}
+
+interface QuoteRow {
+  id: string;
+  request_id: string;
+  mechanic_id: string;
+  price: number;
+  eta_minutes: number;
+  rating: number;
+  accepted: boolean;
+  withdrawn_at: Date | null;
+  rejected_at: Date | null;
+  created_at: Date;
+  m_first: string;
+  m_last: string;
+  m_email: string;
+}
+
+const SELECT_QUOTE = `
+  SELECT q.id, q.request_id, q.mechanic_id, q.price::float8 AS price, q.eta_minutes,
+         q.rating::float8 AS rating, q.accepted, q.withdrawn_at, q.rejected_at, q.created_at,
+         m.first_name AS m_first, m.last_name AS m_last, m.email AS m_email
+    FROM quotes q
+    JOIN users m ON m.id = q.mechanic_id`;
+
+function toQuoteDto(row: QuoteRow): MechanicQuoteDto {
+  return {
+    id: row.id,
+    requestId: row.request_id,
+    mechanicId: row.mechanic_id,
+    mechanicName: displayNameOf({ first_name: row.m_first, last_name: row.m_last, email: row.m_email }),
+    price: row.price,
+    etaMinutes: row.eta_minutes,
+    rating: row.rating,
+    accepted: row.accepted,
+    withdrawnAt: row.withdrawn_at ? row.withdrawn_at.toISOString() : null,
+    rejectedAt: row.rejected_at ? row.rejected_at.toISOString() : null,
+    createdAt: row.created_at.toISOString(),
+  };
+}
+
+function fetchQuote(db: Queryable, id: string): Promise<QuoteRow | null> {
+  return db.queryOne<QuoteRow>(`${SELECT_QUOTE} WHERE q.id = $1`, [id]);
+}
+
+/** A mechanic may act on jobs only once their verification has been approved. */
+async function mechanicIsApproved(db: Queryable, userId: string): Promise<boolean> {
+  const row = await db.queryOne<{ ok: boolean }>(
+    `SELECT EXISTS (SELECT 1 FROM account_requests WHERE user_id = $1 AND status = 'approved'::approval_status) AS ok`,
+    [userId],
+  );
+  return row?.ok === true;
+}
+
+/** The mechanic's current average review rating, 0 when they have none yet. */
+async function mechanicRating(db: Queryable, userId: string): Promise<number> {
+  const row = await db.queryOne<{ rating: number }>(
+    `SELECT COALESCE(AVG(rating), 0)::float8 AS rating FROM reviews WHERE mechanic_id = $1`,
+    [userId],
+  );
+  return row?.rating ?? 0;
+}
+
+export async function submitQuote(
+  db: Database,
+  events: EventBus,
+  auth: AuthContext,
+  requestId: string,
+  input: { price: number; etaMinutes: number },
+): Promise<MechanicQuoteDto> {
+  if (!(await mechanicIsApproved(db, auth.userId))) {
+    throw forbidden('Your mechanic account must be approved before you can send quotes.');
+  }
+  const rating = await mechanicRating(db, auth.userId);
+
+  const quoteId = await db.withTransaction(async (tx) => {
+    const req = await tx.queryOne<{ id: string; client_id: string; status: RequestStatusName; urgency: UrgencyName }>(
+      `SELECT id, client_id, status::text AS status, urgency::text AS urgency
+         FROM service_requests WHERE id = $1 FOR UPDATE`,
+      [requestId],
+    );
+    if (!req) throw notFound('Request not found.');
+    if (req.status !== 'pending') throw conflict('This request is not open for quotes.');
+    if (req.urgency === 'Emergency') throw conflict('Emergency jobs are accepted directly, not quoted.');
+
+    const windowMinutes = WINDOW_MINUTES[req.urgency];
+    if (windowMinutes !== undefined && input.etaMinutes > windowMinutes) {
+      throw badRequest(`A ${req.urgency} job must be completed within its window; your ETA must be ${windowMinutes} minutes or less.`);
+    }
+
+    const existing = await tx.queryOne<{ id: string; accepted: boolean; withdrawn_at: Date | null; rejected_at: Date | null }>(
+      `SELECT id, accepted, withdrawn_at, rejected_at FROM quotes
+        WHERE request_id = $1 AND mechanic_id = $2 FOR UPDATE`,
+      [requestId, auth.userId],
+    );
+
+    if (existing) {
+      if (existing.rejected_at) throw conflict('The client rejected your quote for this job, so you cannot quote it again.');
+      if (existing.accepted) throw conflict('Your quote for this job was already accepted.');
+      if (!existing.withdrawn_at) throw conflict('You have already sent a quote for this job.');
+      // Withdrawn: re-quote by reusing the row.
+      await tx.query(
+        `UPDATE quotes SET price = $2::numeric, eta_minutes = $3, rating = $4::numeric, withdrawn_at = NULL, created_at = now()
+          WHERE id = $1`,
+        [existing.id, input.price, input.etaMinutes, rating],
+      );
+      return existing.id;
+    }
+
+    const inserted = await tx.queryOne<{ id: string }>(
+      `INSERT INTO quotes (request_id, mechanic_id, price, eta_minutes, rating)
+       VALUES ($1, $2, $3::numeric, $4, $5::numeric)
+       RETURNING id`,
+      [requestId, auth.userId, input.price, input.etaMinutes, rating],
+    );
+    if (!inserted) throw new Error('quote insert produced no row');
+    return inserted.id;
+  });
+
+  const row = await fetchQuote(db, quoteId);
+  if (!row) throw new Error('quote vanished after submit');
+  const dto = toQuoteDto(row);
+  const owner = await db.queryOne<{ client_id: string }>(`SELECT client_id FROM service_requests WHERE id = $1`, [requestId]);
+  if (owner) await events.publish({ name: QUOTE_SUBMITTED, data: dto, audience: { userIds: [owner.client_id] } });
+  return dto;
+}
+
+export async function listQuotes(db: Queryable, auth: AuthContext, requestId: string): Promise<MechanicQuoteDto[]> {
+  const req = await db.queryOne<{ client_id: string }>(`SELECT client_id FROM service_requests WHERE id = $1`, [requestId]);
+  if (!req) throw notFound('Request not found.');
+  const isConsole = auth.role === 'admin' || auth.role === 'moderator';
+  const isOwner = req.client_id === auth.userId;
+
+  let rows: QuoteRow[];
+  if (isConsole) {
+    rows = await db.query<QuoteRow>(`${SELECT_QUOTE} WHERE q.request_id = $1 ORDER BY q.created_at`, [requestId]);
+  } else if (isOwner) {
+    // The client sees live offers only — withdrawn and rejected ones are gone.
+    rows = await db.query<QuoteRow>(
+      `${SELECT_QUOTE} WHERE q.request_id = $1 AND q.withdrawn_at IS NULL AND q.rejected_at IS NULL ORDER BY q.created_at`,
+      [requestId],
+    );
+  } else if (auth.role === 'mechanic') {
+    // A mechanic sees only their own quote (any state, so they learn it was rejected).
+    rows = await db.query<QuoteRow>(`${SELECT_QUOTE} WHERE q.request_id = $1 AND q.mechanic_id = $2`, [requestId, auth.userId]);
+  } else {
+    throw notFound('Request not found.');
+  }
+  return rows.map(toQuoteDto);
+}
+
+export async function withdrawQuote(
+  db: Database,
+  events: EventBus,
+  auth: AuthContext,
+  requestId: string,
+): Promise<MechanicQuoteDto> {
+  const updated = await db.queryOne<{ id: string }>(
+    `UPDATE quotes SET withdrawn_at = now()
+      WHERE request_id = $1 AND mechanic_id = $2
+        AND withdrawn_at IS NULL AND rejected_at IS NULL AND accepted = false
+      RETURNING id`,
+    [requestId, auth.userId],
+  );
+  if (!updated) throw notFound('You have no live quote on this request to withdraw.');
+
+  const row = await fetchQuote(db, updated.id);
+  if (!row) throw new Error('quote vanished after withdraw');
+  const dto = toQuoteDto(row);
+  const owner = await db.queryOne<{ client_id: string }>(`SELECT client_id FROM service_requests WHERE id = $1`, [requestId]);
+  if (owner) await events.publish({ name: QUOTE_UPDATED, data: dto, audience: { userIds: [owner.client_id] } });
+  return dto;
+}
+
+export async function rejectQuote(
+  db: Database,
+  events: EventBus,
+  auth: AuthContext,
+  requestId: string,
+  quoteId: string,
+): Promise<MechanicQuoteDto> {
+  // Only the request's client may reject, and only a live, unaccepted quote.
+  const updated = await db.queryOne<{ id: string; mechanic_id: string }>(
+    `UPDATE quotes q SET rejected_at = now()
+      WHERE q.id = $1 AND q.request_id = $2
+        AND q.withdrawn_at IS NULL AND q.rejected_at IS NULL AND q.accepted = false
+        AND EXISTS (SELECT 1 FROM service_requests sr WHERE sr.id = q.request_id AND sr.client_id = $3)
+      RETURNING q.id, q.mechanic_id`,
+    [quoteId, requestId, auth.userId],
+  );
+  if (!updated) throw notFound('Quote not found.');
+
+  const row = await fetchQuote(db, updated.id);
+  if (!row) throw new Error('quote vanished after reject');
+  const dto = toQuoteDto(row);
+  await events.publish({ name: QUOTE_UPDATED, data: dto, audience: { userIds: [updated.mechanic_id] } });
   return dto;
 }
