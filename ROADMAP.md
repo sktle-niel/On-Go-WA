@@ -255,6 +255,42 @@ groups.
 
 ---
 
+## Step 10a — Locations (`LocationApi`) `[ ]`
+
+**Goal.** The phone reports where it is; the server keeps the latest fix per
+user and answers "which open jobs are near this mechanic". Added to
+`on_go_shared` upstream on 2026-09-13 (`location_api.dart`, `geo_location.dart`,
+`place.dart`).
+
+**Tasks.**
+- [ ] Migration 005: `user_locations` (one row per user: point, recorded_at,
+      accuracy_m, source, role, availability, updated_at) plus a `place` jsonb
+      column on `service_requests` for the job Place. Haversine in SQL is
+      enough at service-radius distances; PostGIS only if "near me" lists grow.
+- [ ] `POST /locations` (bearer): body is `LocationUpdate`; `userId` in the body
+      is ignored, the token holder is the subject; `role` must match the
+      caller; `availability` accepted for mechanics only. Upsert.
+- [ ] `GET /users/:userId/location` (bearer): own location, console roles, or
+      the counterpart on an active job; otherwise 404.
+- [ ] `GET /mechanics/:mechanicId/nearby-jobs?radiusKm=` (bearer): the mechanic
+      themself or a console role. Implements `isJobWithinServiceRadius`
+      exactly: radius > 0, valid points, availability `available` (or unset),
+      distance <= radius, edge counts as in; returns pending job ids.
+- [ ] Enum wire values are the Dart enum **names**: `gps | lastKnown | manual`,
+      `client | mechanic`, `available | onJob | offline`.
+- [ ] Integration tests on PGlite, including the radius edge and the
+      availability skip.
+- [ ] Update the integration guide and regenerate the docx.
+
+**Done when.** A mechanic phone reports a fix and the nearby-jobs query returns
+the pending requests inside its radius. Depends on jobs having locations, so
+it lands with or right after the first slice of Step 10.
+
+**Model.** Mid-tier model; top-tier review for the ownership rules on
+`GET /users/:userId/location`.
+
+---
+
 ## Step 10 — The jobs domain `[ ]`
 
 **Goal.** Help requests, quotes, ETA, chat, reviews and QR payments move from

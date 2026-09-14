@@ -11,7 +11,7 @@ front ends that another developer builds:
 | Front end | Roles | Where it lives |
 | --- | --- | --- |
 | Mobile app | Client, Mechanic | `../On-Go/lib` |
-| Admin console (web) | Admin, Moderator | `../On-Go/admin_web` |
+| Admin console (web) | Admin, Moderator | separate `on_go_console` repository (not on this machine; same `on_go_shared` contract) |
 
 The API contract both front ends code against is the pure-Dart package
 `../On-Go/packages/on_go_shared` (`lib/src/api/api_endpoints.dart` for routes,
@@ -205,6 +205,9 @@ deploy/CLOUD_RUN.md    step-by-step trial deployment: Cloud Run + Neon + Secret 
 | PUT/DELETE | /platform/appearance | publishBackground / clearBackground | console + canChangeBackground | 501 |
 | GET | /platform/points-policy | PointsPolicyApi.fetch | public | live |
 | PUT | /platform/points-policy | PointsPolicyApi.update | admin | live |
+| POST | /locations | LocationApi.reportLocation | bearer | not registered (Step 10a) |
+| GET | /users/:userId/location | LocationApi.fetchLastKnown | owner, console | not registered (Step 10a) |
+| GET | /mechanics/:mechanicId/nearby-jobs | LocationApi.findNearbyJobIds | mechanic (self), console | not registered (Step 10a) |
 | WS | /events | every `watch*` | first-frame auth | live |
 | GET | /health/live, /health/ready | — | public | live |
 
@@ -225,6 +228,12 @@ deploy/CLOUD_RUN.md    step-by-step trial deployment: Cloud Run + Neon + Secret 
 8. The jobs domain (help requests, quotes, ETA, chat, reviews, QR payments)
    is not in the contract at all; the mobile app keeps it in memory. Tables
    exist in 001 for when it moves server-side.
+9. **`LocationApi` (added to `on_go_shared` upstream on 2026-09-13) is not served
+   yet:** `POST /locations`, `GET /users/:userId/location`,
+   `GET /mechanics/:mechanicId/nearby-jobs?radiusKm=`. Models `GeoPoint`,
+   `LocationUpdate` (`source`, `role`, `availability` travel as Dart enum
+   names) and `Place`. Planned as ROADMAP Step 10a. The routes are not
+   registered, so they answer 404 today, not 501.
 
 ## Rules
 
@@ -346,6 +355,10 @@ Verified 2026-09-11 and to be kept true:
 - Git repository since 2026-09-14; remote `origin` is
   `https://github.com/sktle-niel/On-Go-WA.git`, branch `main`. Commits carry
   only the owner's identity (no co-author or tool trailers).
+- The front-end repo `https://github.com/sktle-niel/On-Go.git` is cloned at
+  `../On-Go` on branch `master` (synced 2026-09-14; a local-only branch
+  `local-snapshot` keeps the pre-sync copy). The admin console moved upstream
+  to a separate `on_go_console` repository that is not on this machine.
 
 ## Commands
 
