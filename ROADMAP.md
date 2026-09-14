@@ -349,6 +349,14 @@ the mobile app's memory to the server, so two devices see the same job.
 **Done when.** A client on one phone and a mechanic on another complete a job
 end to end through the API.
 
+**Slice 4 done (2026-09-14): the service-status machine.** Migration 009 adds
+the progress flags (navigating, en_route, arrived, work_started,
+service_completed) and their timestamps to service_requests. Five mechanic-only
+endpoints advance a matched job; each is idempotent (COALESCE keeps the first
+timestamp), gated (work needs arrival, service-complete needs work), and locks
+the request row so it cannot race a cancel or expiry. service_completed leaves
+the request matched — payment closes it. 6 tests.
+
 **Slice 3 done (2026-09-14): accept (the atomic claim).** Migration 008 adds a
 partial unique index for one active emergency per mechanic. The client accepts a
 live quote (`/quotes/:quoteId/accept`) and a mechanic accepts an emergency

@@ -54,6 +54,16 @@ export interface ServiceRequestDto {
   completedAt: string | null;
   mechanicId: string | null;
   mechanicName: string | null;
+  navigating: boolean;
+  navigatingAt: string | null;
+  enRoute: boolean;
+  enRouteAt: string | null;
+  arrived: boolean;
+  arrivedAt: string | null;
+  workStarted: boolean;
+  workStartedAt: string | null;
+  serviceCompleted: boolean;
+  serviceCompletedAt: string | null;
   lastCancelReason: string | null;
   lastCancelledBy: string | null;
   lastCancelledAt: string | null;
@@ -76,6 +86,16 @@ interface RequestRow {
   created_at: Date;
   accepted_at: Date | null;
   completed_at: Date | null;
+  navigating: boolean;
+  navigating_at: Date | null;
+  en_route: boolean;
+  en_route_at: Date | null;
+  arrived: boolean;
+  arrived_at: Date | null;
+  work_started: boolean;
+  work_started_at: Date | null;
+  service_completed: boolean;
+  service_completed_at: Date | null;
   last_cancel_reason: string | null;
   last_cancelled_by: string | null;
   last_cancelled_at: Date | null;
@@ -94,6 +114,9 @@ const SELECT_REQUEST = `
   SELECT sr.id, sr.client_id, sr.mechanic_id, sr.status::text AS status, sr.urgency::text AS urgency,
          sr.issue, sr.description, sr.location, sr.surcharge, sr.latitude, sr.longitude,
          sr.created_at, sr.accepted_at, sr.completed_at,
+         sr.navigating, sr.navigating_at, sr.en_route, sr.en_route_at,
+         sr.arrived, sr.arrived_at, sr.work_started, sr.work_started_at,
+         sr.service_completed, sr.service_completed_at,
          sr.last_cancel_reason, sr.last_cancelled_by, sr.last_cancelled_at,
          sr.expired_at, sr.expired_by_mechanic,
          c.first_name AS c_first, c.last_name AS c_last, c.email AS c_email,
@@ -124,6 +147,16 @@ function toDto(row: RequestRow): ServiceRequestDto {
     mechanicName: row.has_mechanic
       ? displayNameOf({ first_name: row.m_first ?? '', last_name: row.m_last ?? '', email: row.m_email ?? '' })
       : null,
+    navigating: row.navigating,
+    navigatingAt: iso(row.navigating_at),
+    enRoute: row.en_route,
+    enRouteAt: iso(row.en_route_at),
+    arrived: row.arrived,
+    arrivedAt: iso(row.arrived_at),
+    workStarted: row.work_started,
+    workStartedAt: iso(row.work_started_at),
+    serviceCompleted: row.service_completed,
+    serviceCompletedAt: iso(row.service_completed_at),
     lastCancelReason: row.last_cancel_reason,
     lastCancelledBy: row.last_cancelled_by,
     lastCancelledAt: iso(row.last_cancelled_at),
@@ -572,6 +605,68 @@ export async function acceptEmergency(
 
   const row = await fetchRequest(db, requestId);
   if (!row) throw new Error('request vanished after emergency accept');
+  const dto = toDto(row);
+  await events.publish({ name: SERVICE_REQUEST_UPDATED, data: dto, audience: { userIds: parties(dto) } });
+  return dto;
+}
+
+// ─── Slice 4: the service-status machine ────────────────────────────────────
+
+export type StatusStep = 'navigating' | 'en_route' | 'arrived' | 'work_started' | 'service_completed';
+
+/**
+ * The assigned mechanic advances a matched job one stage. Each step is
+ * idempotent (repeating it keeps the first timestamp) and gated: work needs
+ * arrival, service-complete needs work. The request row is locked so a status
+ * change cannot race a cancel or expiry. `service_completed` leaves the request
+ * matched — payment (slice 5) is what closes it.
+ */
+export async function advanceJobStatus(
+  db: Database,
+  events: EventBus,
+  auth: AuthContext,
+  requestId: string,
+  step: StatusStep,
+): Promise<ServiceRequestDto> {
+  await db.withTransaction(async (tx) => {
+    const row = await tx.queryOne<{ mechanic_id: string | null; status: RequestStatusName; arrived: boolean; work_started: boolean }>(
+      `SELECT mechanic_id, status::text AS status, arrived, work_started
+         FROM service_requests WHERE id = $1 FOR UPDATE`,
+      [requestId],
+    );
+    if (!row || row.mechanic_id !== auth.userId) throw notFound('Request not found.');
+    if (row.status !== 'matched') throw conflict('This job is not in progress.');
+
+    switch (step) {
+      case 'navigating':
+        await tx.query(`UPDATE service_requests SET navigating = true, navigating_at = COALESCE(navigating_at, now()) WHERE id = $1`, [requestId]);
+        break;
+      case 'en_route':
+        await tx.query(`UPDATE service_requests SET en_route = true, en_route_at = COALESCE(en_route_at, now()) WHERE id = $1`, [requestId]);
+        break;
+      case 'arrived':
+        // Arriving implies being en route, so backfill it.
+        await tx.query(
+          `UPDATE service_requests
+              SET arrived = true, arrived_at = COALESCE(arrived_at, now()),
+                  en_route = true, en_route_at = COALESCE(en_route_at, now())
+            WHERE id = $1`,
+          [requestId],
+        );
+        break;
+      case 'work_started':
+        if (!row.arrived) throw conflict('Mark yourself arrived before starting work.');
+        await tx.query(`UPDATE service_requests SET work_started = true, work_started_at = COALESCE(work_started_at, now()) WHERE id = $1`, [requestId]);
+        break;
+      case 'service_completed':
+        if (!row.work_started) throw conflict('Start the work before completing the service.');
+        await tx.query(`UPDATE service_requests SET service_completed = true, service_completed_at = COALESCE(service_completed_at, now()) WHERE id = $1`, [requestId]);
+        break;
+    }
+  });
+
+  const row = await fetchRequest(db, requestId);
+  if (!row) throw new Error('request vanished after status change');
   const dto = toDto(row);
   await events.publish({ name: SERVICE_REQUEST_UPDATED, data: dto, audience: { userIds: parties(dto) } });
   return dto;

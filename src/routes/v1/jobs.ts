@@ -14,6 +14,7 @@ import {
 import {
   acceptEmergency,
   acceptQuote,
+  advanceJobStatus,
   cancelServiceRequest,
   createServiceRequest,
   getServiceRequest,
@@ -22,6 +23,7 @@ import {
   rejectQuote,
   submitQuote,
   withdrawQuote,
+  type StatusStep,
 } from '../../services/jobs.service.js';
 
 const QuoteIdParams = Type.Object({ id: Uuid, quoteId: Uuid });
@@ -227,4 +229,32 @@ export const jobRoutes: FastifyPluginAsyncTypebox = async (app) => {
     },
     async (request) => acceptEmergency(app.db, app.events, currentAuth(request), request.params.id, request.body),
   );
+
+  // ── Service-status machine (the assigned mechanic advances a matched job) ──
+
+  const STEPS: Array<{ path: string; step: StatusStep; summary: string }> = [
+    { path: 'navigating', step: 'navigating', summary: 'Start navigating to the job' },
+    { path: 'en-route', step: 'en_route', summary: 'Mark en route' },
+    { path: 'arrived', step: 'arrived', summary: 'Mark arrived' },
+    { path: 'start-work', step: 'work_started', summary: 'Start work' },
+    { path: 'complete-service', step: 'service_completed', summary: 'Mark the service complete' },
+  ];
+
+  for (const { path, step, summary } of STEPS) {
+    app.post(
+      `/service-requests/:id/${path}`,
+      {
+        preHandler: [requireAuth({ roles: ['mechanic'] })],
+        schema: {
+          tags: ['Jobs'],
+          summary,
+          description: `Addition. The assigned mechanic advances a matched job (${step}). Idempotent.`,
+          security: [{ bearerAuth: [] }],
+          params: IdParams,
+          response: { 200: ServiceRequest, ...errorResponses(401, 403, 404, 409) },
+        },
+      },
+      async (request) => advanceJobStatus(app.db, app.events, currentAuth(request), request.params.id, step),
+    );
+  }
 };

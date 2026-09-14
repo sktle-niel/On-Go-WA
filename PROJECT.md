@@ -265,6 +265,7 @@ real deployment needs a GCS driver (see `deploy/CLOUD_RUN.md` §9).
 | POST | /service-requests/:id/quotes/:quoteId/reject | (addition) reject a quote | client (owner) | live |
 | POST | /service-requests/:id/quotes/:quoteId/accept | (addition) accept a quote | client (owner) | live |
 | POST | /service-requests/:id/accept | (addition) accept an emergency | mechanic (approved) | live |
+| POST | /service-requests/:id/{navigating,en-route,arrived,start-work,complete-service} | (addition) advance a matched job | assigned mechanic | live |
 | WS | /events | every `watch*` | first-frame auth | live |
 | GET | /health/live, /health/ready | — | public | live |
 
