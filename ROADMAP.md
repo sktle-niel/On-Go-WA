@@ -68,7 +68,7 @@ step-by-step guide `deploy/CLOUD_RUN.md`.
 
 ---
 
-## Step 3 — A real PostgreSQL: Neon + Cloud Run `[ ]`
+## Step 3 — A real PostgreSQL: Neon + Cloud Run `[x]` (done 2026-09-14; hardening optional)
 
 **Goal.** Migrations and the seed run against actual Postgres, and the API is
 reachable at a public URL. Follow `deploy/CLOUD_RUN.md`.
@@ -78,32 +78,40 @@ reachable at a public URL. Follow `deploy/CLOUD_RUN.md`.
       linked, gcloud CLI 584 installed and signed in, default region
       asia-southeast1, APIs enabled (run, cloudbuild, artifactregistry,
       secretmanager, compute). Done 2026-09-11.
-- [ ] Neon free project in AWS ap-southeast-1 (Singapore); note the direct
+- [x] Neon free project in AWS ap-southeast-1 (Singapore); note the direct
       connection details.
 
 **Tasks (together).**
-- [~] `.env.cloud` scaffolded with the real JWT key and pepper; the four
-      `REPLACE-…` PG lines wait for Neon.
-- [ ] `node --env-file=.env.cloud --import tsx scripts/migrate.ts` applies
+- [x] `.env.cloud` scaffolded with the real JWT key and pepper; the four
+      `REPLACE-…` PG lines filled from Neon on 2026-09-14.
+- [x] `node --env-file=.env.cloud --import tsx scripts/migrate.ts` applies
       001–004 on Neon.
-- [ ] Seed the first admin the same way.
-- [~] Secret Manager: `ongo-jwt-signing-key` and `ongo-password-pepper`
+- [x] Seed the first admin the same way.
+- [x] Secret Manager: `ongo-jwt-signing-key` and `ongo-password-pepper`
       created and readable by the compute service account;
-      `ongo-pg-password` waits for Neon.
+      `ongo-pg-password` added 2026-09-14 (piped in, never printed).
 - [x] Env safety verified 2026-09-11: `.env` / `.env.*` ignored by git,
       Docker and gcloud (`.env.example` excepted); no secret values in any
       committed file; `.env.cloud` ACL limited to the user, SYSTEM and
       Administrators. Rules recorded in PROJECT.md → *Secrets and
       environment files*.
-- [ ] `gcloud run deploy ongo-api --source . …` (guide section 3).
-- [ ] `curl /health/ready` → `database: up`; sign in as admin from `/docs`.
-- [ ] Create the `ongo-migrate` Cloud Run Job for future releases.
+- [x] `gcloud run deploy ongo-api --source . …` (guide section 3).
+- [x] `curl /health/ready` → `database: up`; sign in as admin from `/docs`.
+- [x] Create the `ongo-migrate` Cloud Run Job for future releases.
 - [ ] Optional hardening: run the API as `ongo_app` instead of the Neon owner
       (`ALTER ROLE ongo_app WITH LOGIN PASSWORD …`) and confirm the grants
       from 002/004 cover every live route.
 
 **Done when.** The front-end developer can sign in against the public URL and
 read `/docs`.
+n**Result (2026-09-14).** Service URL
+`https://ongo-api-618821603306.asia-southeast1.run.app`, revision
+`ongo-api-00001`. `/health/ready` reports `database: up`; the seeded admin
+signs in from `/docs` (console surface, refresh cookie set) and authenticates
+on the event socket. Job `ongo-migrate` was created from the deployed image
+and executed once. Migration 002 changed on the way: `ALTER DEFAULT
+PRIVILEGES IN SCHEMA public` without `FOR ROLE`, because the Neon owner is
+not a superuser.
 
 **Model.** Mid-tier model for wiring; top-tier model if grants need changing.
 

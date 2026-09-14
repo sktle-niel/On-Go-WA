@@ -156,10 +156,24 @@ deploy/CLOUD_RUN.md    step-by-step trial deployment: Cloud Run + Neon + Secret 
   answers `/health/live` 200, `/health/ready` 503, `/docs/json` (23 paths)
   and the 404 envelope (smoke-tested 2026-09-11).
 
+### Deployed (2026-09-14, staging)
+
+- Cloud Run service `ongo-api` in asia-southeast1, revision `ongo-api-00001`,
+  built by Cloud Build from this folder:
+  `https://ongo-api-618821603306.asia-southeast1.run.app` (`/docs` on).
+- Neon project `blue-grass-28212582` (AWS ap-southeast-1, branch `production`,
+  database `neondb`); migrations 001–004 applied, first admin seeded.
+- Secret Manager: `ongo-jwt-signing-key`, `ongo-password-pepper`,
+  `ongo-pg-password`, read by the compute service account.
+- Cloud Run Job `ongo-migrate` (same image, `node dist/scripts/migrate.js`)
+  executed once: nothing new.
+- Verified from the laptop: `/health/ready` → `database: up`, `/docs/json`
+  23 paths, points-policy and appearance GET, 404 envelope, admin sign-in
+  (console surface: cookie set, no refresh token in body), `/me`, WebSocket
+  auth → `ready`.
+
 ### Not yet verified
 
-- The Docker image (no Docker locally; Cloud Build builds it in Step 3).
-- Anything against a real PostgreSQL server (Step 3: Neon).
 - The Redis code path (no Redis locally).
 - README.md is not written (Step 4).
 
@@ -224,6 +238,10 @@ deploy/CLOUD_RUN.md    step-by-step trial deployment: Cloud Run + Neon + Secret 
   interpolation at runtime.
 - **Migrations are forward-only**, one file per change, no BEGIN/COMMIT
   inside, grants included (see 004's DO block for the conditional pattern).
+- **Grants must work for a non-superuser owner.** Managed Postgres (Neon)
+  runs migrations as the database owner, not a superuser: no `FOR ROLE`
+  default privileges, nothing that needs `SUPERUSER`. PGlite (superuser)
+  proves the SQL, not the privileges; the first run on the real database does.
 - **Services are plain functions over `Queryable`** so they run inside or
   outside a transaction and under PGlite in tests.
 - **Every route has a TypeBox schema** for params, query, body and each
@@ -265,7 +283,7 @@ Verified 2026-09-11 and to be kept true:
 | --- | --- | --- |
 | `.env.example` | Every setting with placeholder values, comments | nothing — it is the template and is committed |
 | `.env` | Local development values (docker-compose Postgres) | git, Docker, gcloud |
-| `.env.cloud` | The staging JWT key and pepper (same values as Secret Manager) plus the Neon connection, for laptop-run migrate/seed only | git, Docker, gcloud |
+| `.env.cloud` | The staging JWT key and pepper (same values as Secret Manager) plus the Neon connection and the `SEED_ADMIN_*` values, for laptop-run migrate/seed only | git, Docker, gcloud |
 | Secret Manager | `ongo-jwt-signing-key`, `ongo-password-pepper`, `ongo-pg-password` — what Cloud Run actually reads | — |
 
 - `.gitignore`, `.dockerignore` and `.gcloudignore` all contain `.env`,
@@ -314,8 +332,15 @@ Verified 2026-09-11 and to be kept true:
   breaks the path); use `--name=on-go-staging`, not `--name="On Go"`.
 - Google Cloud: project `ongo-staging-2026` (number 618821603306), region
   asia-southeast1, billing account 01F2AC-2E9C79-B8B63A. Secrets:
-  `ongo-jwt-signing-key`, `ongo-password-pepper`, (pending) `ongo-pg-password`.
+  `ongo-jwt-signing-key`, `ongo-password-pepper`, `ongo-pg-password`.
   Cloud Run runs as `618821603306-compute@developer.gserviceaccount.com`.
+  Service `ongo-api`: `https://ongo-api-618821603306.asia-southeast1.run.app`.
+  Job `ongo-migrate` runs migrations from the deployed image; after a deploy,
+  `gcloud run jobs update ongo-migrate --image <new image>` then `execute`.
+- Neon: project `blue-grass-28212582`, AWS ap-southeast-1, branch
+  `production`, database `neondb`, role `neondb_owner` (owner, not superuser).
+  The API connects as the owner for now; the `ongo_app` login is the optional
+  hardening left in Step 3.
 - `.env.cloud` (git-ignored) holds the staging pepper and key for laptop-run
   migrate/seed; keep it in sync with Secret Manager.
 - Git repository since 2026-09-14; remote `origin` is
