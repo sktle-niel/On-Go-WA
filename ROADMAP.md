@@ -349,6 +349,15 @@ the mobile app's memory to the server, so two devices see the same job.
 **Done when.** A client on one phone and a mechanic on another complete a job
 end to end through the API.
 
+**Slice 3 done (2026-09-14): accept (the atomic claim).** Migration 008 adds a
+partial unique index for one active emergency per mechanic. The client accepts a
+live quote (`/quotes/:quoteId/accept`) and a mechanic accepts an emergency
+first-come (`/service-requests/:id/accept`); both flip the request to matched
+under a `FOR UPDATE` lock with a guarded `WHERE status = pending`, so two accepts
+on the same request — proven by parallel-accept tests for both flows — leave
+exactly one winner. Emergency accept writes the accept record (a quote,
+accepted=true, price 0) and is capped to the 12-hour window. 8 tests.
+
 **Slice 2 done (2026-09-14): quotes.** Migration 007 adds withdrawn_at,
 rejected_at and a rating snapshot to quotes. An approved mechanic (verification
 approved) sends a quote on a pending Normal/Urgent request: one live quote per

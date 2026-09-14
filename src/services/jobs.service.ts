@@ -462,3 +462,117 @@ export async function rejectQuote(
   await events.publish({ name: QUOTE_UPDATED, data: dto, audience: { userIds: [updated.mechanic_id] } });
   return dto;
 }
+
+// ─── Slice 3: accept (the atomic claim) ─────────────────────────────────────
+
+function parties(dto: ServiceRequestDto): string[] {
+  return [dto.clientId, dto.mechanicId].filter((id): id is string => id !== null);
+}
+
+/**
+ * The client accepts a live quote. The request row is locked and flipped from
+ * pending to matched in one step, so two accepts on the same request cannot
+ * both win: the second sees a non-pending row and is refused.
+ */
+export async function acceptQuote(
+  db: Database,
+  events: EventBus,
+  auth: AuthContext,
+  requestId: string,
+  quoteId: string,
+): Promise<ServiceRequestDto> {
+  await db.withTransaction(async (tx) => {
+    const req = await tx.queryOne<{ client_id: string; status: RequestStatusName }>(
+      `SELECT client_id, status::text AS status FROM service_requests WHERE id = $1 FOR UPDATE`,
+      [requestId],
+    );
+    if (!req || req.client_id !== auth.userId) throw notFound('Request not found.');
+    if (req.status !== 'pending') throw conflict('This request has already been matched or closed.');
+
+    const q = await tx.queryOne<{ id: string; mechanic_id: string; withdrawn_at: Date | null; rejected_at: Date | null }>(
+      `SELECT id, mechanic_id, withdrawn_at, rejected_at FROM quotes WHERE id = $1 AND request_id = $2 FOR UPDATE`,
+      [quoteId, requestId],
+    );
+    if (!q || q.withdrawn_at || q.rejected_at) throw notFound('That quote is not available to accept.');
+
+    await tx.query(
+      `UPDATE service_requests SET status = 'matched'::request_status, mechanic_id = $2, accepted_at = now()
+        WHERE id = $1 AND status = 'pending'::request_status`,
+      [requestId, q.mechanic_id],
+    );
+    await tx.query(`UPDATE quotes SET accepted = (id = $2) WHERE request_id = $1`, [requestId, quoteId]);
+  });
+
+  const row = await fetchRequest(db, requestId);
+  if (!row) throw new Error('request vanished after accept');
+  const dto = toDto(row);
+  await events.publish({ name: SERVICE_REQUEST_UPDATED, data: dto, audience: { userIds: parties(dto) } });
+  return dto;
+}
+
+/**
+ * A mechanic accepts an emergency directly (no quoting — the price is agreed in
+ * person later). First-come: the guarded flip to matched lets exactly one
+ * mechanic take it. One active emergency per mechanic, enforced by the partial
+ * unique index (migration 008) as well as checked here for a clear message.
+ */
+export async function acceptEmergency(
+  db: Database,
+  events: EventBus,
+  auth: AuthContext,
+  requestId: string,
+  input: { etaMinutes: number },
+): Promise<ServiceRequestDto> {
+  if (!(await mechanicIsApproved(db, auth.userId))) {
+    throw forbidden('Your mechanic account must be approved before you can accept jobs.');
+  }
+  const rating = await mechanicRating(db, auth.userId);
+  const windowMinutes = WINDOW_MINUTES.Emergency ?? 12 * 60;
+  if (input.etaMinutes > windowMinutes) {
+    throw badRequest(`An Emergency must be completed within its window; your ETA must be ${windowMinutes} minutes or less.`);
+  }
+
+  try {
+    await db.withTransaction(async (tx) => {
+      const req = await tx.queryOne<{ status: RequestStatusName; urgency: UrgencyName }>(
+        `SELECT status::text AS status, urgency::text AS urgency FROM service_requests WHERE id = $1 FOR UPDATE`,
+        [requestId],
+      );
+      if (!req) throw notFound('Request not found.');
+      if (req.urgency !== 'Emergency') throw conflict('Only Emergency jobs are accepted directly; send a quote instead.');
+      if (req.status !== 'pending') throw conflict('This emergency has already been taken.');
+
+      const active = await tx.queryOne<{ one: number }>(
+        `SELECT 1 AS one FROM service_requests
+          WHERE mechanic_id = $1 AND urgency = 'Emergency'::urgency_level AND status = 'matched'::request_status
+          LIMIT 1`,
+        [auth.userId],
+      );
+      if (active) throw conflict('You already have an active emergency job.');
+
+      await tx.query(
+        `UPDATE service_requests SET status = 'matched'::request_status, mechanic_id = $2, accepted_at = now()
+          WHERE id = $1 AND status = 'pending'::request_status`,
+        [requestId, auth.userId],
+      );
+      // The emergency accept record: a quote marked accepted, price 0 (agreed
+      // in person later via the payment slice).
+      await tx.query(
+        `INSERT INTO quotes (request_id, mechanic_id, price, eta_minutes, rating, accepted)
+         VALUES ($1, $2, 0, $3, $4::numeric, true)
+         ON CONFLICT (request_id, mechanic_id) DO UPDATE
+           SET accepted = true, eta_minutes = $3, rating = $4::numeric, withdrawn_at = NULL, rejected_at = NULL`,
+        [requestId, auth.userId, input.etaMinutes, rating],
+      );
+    });
+  } catch (err) {
+    if (isUniqueViolation(err)) throw conflict('You already have an active emergency job.');
+    throw err;
+  }
+
+  const row = await fetchRequest(db, requestId);
+  if (!row) throw new Error('request vanished after emergency accept');
+  const dto = toDto(row);
+  await events.publish({ name: SERVICE_REQUEST_UPDATED, data: dto, audience: { userIds: parties(dto) } });
+  return dto;
+}

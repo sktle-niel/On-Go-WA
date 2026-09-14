@@ -92,3 +92,11 @@ export const SubmitQuoteBody = Type.Object(
   },
   { additionalProperties: false },
 );
+
+/** A mechanic accepts an Emergency directly; the price is agreed in person. */
+export const AcceptEmergencyBody = Type.Object(
+  {
+    etaMinutes: Type.Integer({ minimum: 1, maximum: 12 * 60 }),
+  },
+  { additionalProperties: false },
+);
