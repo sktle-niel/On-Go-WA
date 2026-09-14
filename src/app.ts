@@ -5,6 +5,7 @@ import Fastify, { type FastifyBaseLogger } from 'fastify';
 import type { Redis } from 'ioredis';
 import type { AppConfig } from './config/env.js';
 import type { CodeDelivery } from './context.js';
+import { createCodeDelivery } from './delivery/code-delivery.js';
 import type { Database } from './db/database.js';
 import type { EventBus } from './events/bus.js';
 import { createStorage, type Storage } from './storage/storage.js';
@@ -60,7 +61,7 @@ export async function buildApp(deps: AppDeps) {
   base.decorate('config', config);
   base.decorate('db', deps.db);
   base.decorate('events', deps.events);
-  base.decorate('codeDelivery', deps.codeDelivery ?? createLogCodeDelivery(config));
+  base.decorate('codeDelivery', deps.codeDelivery ?? createCodeDelivery(config));
   base.decorate('storage', deps.storage ?? createStorage(config));
 
   registerErrorHandling(base);
@@ -82,23 +83,3 @@ export async function buildApp(deps: AppDeps) {
 }
 
 export type App = Awaited<ReturnType<typeof buildApp>>;
-
-/**
- * Until a mail or SMS provider is wired in, a reset code has nowhere to go.
- * Outside production it is logged so a developer can complete the flow; in
- * production it is deliberately NOT logged, and the gap is reported instead.
- */
-function createLogCodeDelivery(config: AppConfig): CodeDelivery {
-  return {
-    async deliverPasswordResetCode({ email, code, expiresInSeconds }) {
-      if (config.NODE_ENV === 'production') {
-        logger.error({ email }, 'password reset requested but no code delivery provider is configured');
-        return;
-      }
-      logger.warn(
-        { email, resetCode: code, expiresInSeconds },
-        'DEV ONLY — password reset code (no delivery provider configured)',
-      );
-    },
-  };
-}

@@ -242,21 +242,29 @@ publish `platform_appearance.updated`. 7 integration tests on an in-memory
 store. Deploy note: Cloud Run disk is ephemeral, so real persistence needs a
 cloud driver (GCS) — a small follow-up when a bucket is configured.
 
-## Step 8 — Code delivery (email / SMS) `[ ]`
+## Step 8 — Code delivery (email / SMS) `[x]` (done 2026-09-14, email via SMTP)
 
 **Goal.** Password reset codes reach people.
 
 **Tasks.**
-- [ ] User picks a provider (SES, Resend, Postmark, or an SMS gateway).
-- [ ] Implement `CodeDelivery` for it; keep the log implementation for dev.
-- [ ] Provider credentials via Secrets Manager; never in `.env` committed.
-- [ ] Rate-limit reset requests per email as well as per IP.
+- [x] User picks a provider (SES, Resend, Postmark, or an SMS gateway).
+- [x] Implement `CodeDelivery` for it; keep the log implementation for dev.
+- [x] Provider credentials via Secrets Manager; never in `.env` committed.
+- [x] Rate-limit reset requests per email as well as per IP.
 
 **Done when.** A reset code arrives in an inbox from a deployed environment.
 
 **Model.** Mid-tier model.
 
 ---
+
+**Result (2026-09-14).** A `CodeDelivery` driver layer (`src/delivery`): `log`
+for dev, `smtp` (nodemailer) for any provider — Gmail, Resend, Postmark, SES,
+Mailtrap — chosen by the SMTP_* settings, password from Secret Manager. The
+email content is a pure, tested template. Reset requests are capped per email
+(PASSWORD_RESET_EMAIL_MAX/WINDOW) on top of the per-IP limit. 4 tests. SMS
+stays a future driver behind the same interface (needs a gateway choice, e.g.
+a PH SMS provider). Config `DELIVERY_DRIVER=smtp` requires the SMTP_* values.
 
 ## Step 9 — CI and deployment `[ ]`
 

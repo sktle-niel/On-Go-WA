@@ -122,7 +122,8 @@ deploy/CLOUD_RUN.md    step-by-step trial deployment: Cloud Run + Neon + Secret 
 - Full auth: sign-in, register (client/mechanic), refresh with rotation and
   reuse detection, sign-out, `/me`, change password (revokes other devices,
   returns a fresh access token), password reset (request + confirm, hashed
-  six-digit code, attempt limit, pluggable delivery).
+  six-digit code, per-attempt and per-email limits, delivery via a driver:
+  `log` for dev, `smtp` for any provider (Step 8)).
 - Account lockout after N failures; timing-safe unknown-account path.
 - Points policy: public GET, admin PUT, publishes `points_policy.updated`.
 - Revenue: mobile POST `/payments` (idempotent per requestId), admin GET
@@ -135,6 +136,11 @@ deploy/CLOUD_RUN.md    step-by-step trial deployment: Cloud Run + Neon + Secret 
   gated by its permission; admins hold all), ownership hides other mechanics'
   requests as 404, decisions write `moderator_activity` and `admin_audit_log` and
   publish `verification_request.updated` to the owner and the console.
+- Code delivery (Step 8, no migration): password-reset codes go through a
+  `CodeDelivery` driver (`src/delivery`) — `log` prints in dev and refuses in
+  production; `smtp` sends real email through any provider (nodemailer), with
+  the password from Secret Manager. Reset requests are limited per email as
+  well as per IP. SMS is a future driver behind the same interface.
 - Object storage (Step 7, no migration): a `Storage` abstraction (`src/storage`)
   with a disk driver for dev/tests and a single-instance demo; uploads are
   validated by magic bytes, not the declared type. Mechanics attach documents to
