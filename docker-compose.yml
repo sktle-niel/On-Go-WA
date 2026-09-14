@@ -1,0 +1,59 @@
+# Local infrastructure.
+#
+#   docker compose up -d                 → PostgreSQL only (run the API with `npm run dev`)
+#   docker compose --profile redis up -d → + Redis (set REDIS_URL=redis://localhost:6379)
+#   docker compose --profile full up     → + the API itself, built from this folder
+#
+# The dev credentials below are for THIS machine only. A deployed database
+# uses the roles in migrations/002 and credentials from Secrets Manager.
+
+services:
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: ongo
+      POSTGRES_USER: ongo
+      POSTGRES_PASSWORD: ongo
+    ports:
+      - "5432:5432"
+    volumes:
+      - dbdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ongo -d ongo"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    profiles: ["redis", "full"]
+    ports:
+      - "6379:6379"
+    command: ["redis-server", "--save", "", "--appendonly", "no"]
+
+  api:
+    build: .
+    profiles: ["full"]
+    environment:
+      NODE_ENV: development
+      HOST: 0.0.0.0
+      PORT: 8080
+      PGHOST: db
+      PGPORT: 5432
+      PGDATABASE: ongo
+      PGUSER: ongo
+      PGPASSWORD: ongo
+      PGSSLMODE: disable
+      REDIS_URL: redis://redis:6379
+      JWT_SIGNING_KEY: ${JWT_SIGNING_KEY:?run `npm run secrets` and put the values in .env}
+      PASSWORD_PEPPER: ${PASSWORD_PEPPER:?run `npm run secrets` and put the values in .env}
+    ports:
+      - "8080:8080"
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_started
+
+volumes:
+  dbdata:

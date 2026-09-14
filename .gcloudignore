@@ -1,0 +1,13 @@
+# What `gcloud run deploy --source .` uploads to Cloud Build. Keep it to what
+# the Dockerfile needs; node_modules alone is 150 MB.
+node_modules/
+dist/
+coverage/
+.env
+.env.*
+!.env.example
+test/
+uploads/
+openapi/
+.git/
+*.log
