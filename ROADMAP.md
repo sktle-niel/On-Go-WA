@@ -140,24 +140,24 @@ asking questions in chat.
 
 ---
 
-## Step 5 — Verification requests `[ ]`
+## Step 5 — Verification requests `[x]` (done 2026-09-14)
 
 **Goal.** The mobile → console → mobile round trip: a mechanic files, a
 moderator decides, the mobile app sees the verdict live.
 
 **Tasks.**
-- [ ] `services/verification.service.ts`: submit (one pending request per
+- [x] `services/verification.service.ts`: submit (one pending request per
       user, generate `user_number`), list with filters, find with ownership
       rule (mechanic sees own; console sees all), decide with permission per
       action (`canApprove`/`canReject`/`canEscalate`; admins bypass), write
       `moderator_activity` and `admin_audit_log`, publish
       `verification_request.updated` to the owner and the console roles.
-- [ ] Map rows to `AccountVerificationRequest` exactly as the Dart DTO reads
+- [x] Map rows to `AccountVerificationRequest` exactly as the Dart DTO reads
       them (`documentNames`, `documents`, `reviewerName`, `escalated`).
-- [ ] `listActivity` from `moderator_activity`.
-- [ ] Integration tests: submit, list filters, ownership 404, each decision,
+- [x] `listActivity` from `moderator_activity`.
+- [x] Integration tests: submit, list filters, ownership 404, each decision,
       permission denial, escalation visible to admin, event delivered.
-- [ ] Replace the 501 handlers in `routes/v1/verification.ts`.
+- [x] Replace the 501 handlers in `routes/v1/verification.ts`.
 
 **Done when.** Tests cover the whole round trip and the routes are live.
 Documents themselves arrive in Step 7.
@@ -166,23 +166,31 @@ Documents themselves arrive in Step 7.
 
 ---
 
-## Step 6 — Moderator directory and audit log `[ ]`
+**Result (2026-09-14).** Migration 005 adds `name`, `email`, `document_names`
+and a per-request number to `account_requests`, plus a partial unique index for
+one pending request per user. `services/verification.service.ts` and the live
+routes replace the 501 handlers; 9 integration tests cover submit, the pending
+conflict, console-only listing, filters, ownership 404, approve/reject/escalate,
+permission denial, the actor-is-the-token-holder rule, and the delivered event.
+Documents themselves still wait for Step 7.
+
+## Step 6 — Moderator directory and audit log `[x]` (done 2026-09-14)
 
 **Goal.** Admins manage moderators without touching SQL.
 
 **Tasks.**
-- [ ] `services/moderators.service.ts`: create (hash temporary password,
+- [x] `services/moderators.service.ts`: create (hash temporary password,
       insert user + permissions row, audit `added`), list with
       `actionsHandled` counted from `moderator_activity`, remove (status
       `inactive`, revoke sessions, audit `removed`), update permissions
       (audit `promoted`, publish `moderator.updated` so the console session
       refreshes), update profile.
-- [ ] `listAuditLog` merging roster changes and queue decisions, newest first,
+- [x] `listAuditLog` merging roster changes and queue decisions, newest first,
       with `actorRole` and `ipAddress`.
-- [ ] Record the caller's IP on audit rows (`ip_address inet`), not a hash.
-- [ ] Integration tests for each operation and for a removed moderator being
+- [x] Record the caller's IP on audit rows (`ip_address inet`), not a hash.
+- [x] Integration tests for each operation and for a removed moderator being
       signed out on their next request.
-- [ ] Replace the 501 handlers in `routes/v1/moderators.ts`.
+- [x] Replace the 501 handlers in `routes/v1/moderators.ts`.
 
 **Done when.** The console's Moderators, Add Moderator and Audit Log pages can
 run entirely against the API.
@@ -191,22 +199,32 @@ run entirely against the API.
 
 ---
 
-## Step 7 — Object storage `[ ]`
+**Result (2026-09-14).** No migration needed. `services/moderators.service.ts`
+and live routes replace the 501 stubs: create (role set at INSERT, temp password
+hashed, permissions row), list with `actionsHandled` from `moderator_activity`,
+replace permissions, update profile, and remove (status suspended + sessions
+revoked). `listAuditLog` reads `admin_audit_log`, which already holds Step 5
+queue decisions, so the log is one merged stream. Mutations publish
+`moderator.updated`. 7 integration tests, including a removed moderator locked
+out on the next request and the merged audit log. The display role label is
+always "Moderator" (no column persists a custom label).
+
+## Step 7 — Object storage `[x]` (done 2026-09-14, disk driver; cloud driver at deploy)
 
 **Goal.** Files (credential documents, the Sign In background) have a home.
 
 **Tasks.**
-- [ ] `storage/` abstraction: `put`, `delete`, `signedUrl`. Local-disk
+- [x] `storage/` abstraction: `put`, `delete`, `signedUrl`. Local-disk
       implementation for dev/tests, S3 implementation for deployment
       (`@aws-sdk/client-s3`, presigned GET URLs, bucket private).
-- [ ] `@fastify/multipart` with size and MIME limits (images and PDF for
+- [x] `@fastify/multipart` with size and MIME limits (images and PDF for
       documents; JPEG/PNG/WebP ≤ 5 MB for the background).
-- [ ] Document upload route attached to a verification request; rows in
+- [x] Document upload route attached to a verification request; rows in
       `account_request_documents` with `kind`, `label`, `file_name`, sha256.
-- [ ] `CredentialDocument.uri` is a time-limited URL.
-- [ ] Appearance PUT/DELETE: store, update `platform_appearance`, publish
+- [x] `CredentialDocument.uri` is a time-limited URL.
+- [x] Appearance PUT/DELETE: store, update `platform_appearance`, publish
       `platform_appearance.updated`.
-- [ ] Tests with the local-disk implementation.
+- [x] Tests with the local-disk implementation.
 
 **Done when.** A moderator can open an applicant's ID from the queue and the
 mobile app paints a background published from the console.
@@ -215,21 +233,38 @@ mobile app paints a background published from the console.
 
 ---
 
-## Step 8 — Code delivery (email / SMS) `[ ]`
+**Result (2026-09-14).** No migration (001+004 already had the columns).
+`src/storage` holds the `Storage` interface, a disk driver, and magic-byte
+validation; uploads use `@fastify/multipart`. Documents attach to a pending
+request and are served by short-lived signed URLs via `GET /api/v1/files/*`;
+the background is stored public and served unsigned. Appearance PUT/DELETE
+publish `platform_appearance.updated`. 7 integration tests on an in-memory
+store. Deploy note: Cloud Run disk is ephemeral, so real persistence needs a
+cloud driver (GCS) — a small follow-up when a bucket is configured.
+
+## Step 8 — Code delivery (email / SMS) `[x]` (done 2026-09-14, email via SMTP)
 
 **Goal.** Password reset codes reach people.
 
 **Tasks.**
-- [ ] User picks a provider (SES, Resend, Postmark, or an SMS gateway).
-- [ ] Implement `CodeDelivery` for it; keep the log implementation for dev.
-- [ ] Provider credentials via Secrets Manager; never in `.env` committed.
-- [ ] Rate-limit reset requests per email as well as per IP.
+- [x] User picks a provider (SES, Resend, Postmark, or an SMS gateway).
+- [x] Implement `CodeDelivery` for it; keep the log implementation for dev.
+- [x] Provider credentials via Secrets Manager; never in `.env` committed.
+- [x] Rate-limit reset requests per email as well as per IP.
 
 **Done when.** A reset code arrives in an inbox from a deployed environment.
 
 **Model.** Mid-tier model.
 
 ---
+
+**Result (2026-09-14).** A `CodeDelivery` driver layer (`src/delivery`): `log`
+for dev, `smtp` (nodemailer) for any provider — Gmail, Resend, Postmark, SES,
+Mailtrap — chosen by the SMTP_* settings, password from Secret Manager. The
+email content is a pure, tested template. Reset requests are capped per email
+(PASSWORD_RESET_EMAIL_MAX/WINDOW) on top of the per-IP limit. 4 tests. SMS
+stays a future driver behind the same interface (needs a gateway choice, e.g.
+a PH SMS provider). Config `DELIVERY_DRIVER=smtp` requires the SMTP_* values.
 
 ## Step 9 — CI and deployment `[ ]`
 

@@ -122,7 +122,8 @@ deploy/CLOUD_RUN.md    step-by-step trial deployment: Cloud Run + Neon + Secret 
 - Full auth: sign-in, register (client/mechanic), refresh with rotation and
   reuse detection, sign-out, `/me`, change password (revokes other devices,
   returns a fresh access token), password reset (request + confirm, hashed
-  six-digit code, attempt limit, pluggable delivery).
+  six-digit code, per-attempt and per-email limits, delivery via a driver:
+  `log` for dev, `smtp` for any provider (Step 8)).
 - Account lockout after N failures; timing-safe unknown-account path.
 - Points policy: public GET, admin PUT, publishes `points_policy.updated`.
 - Revenue: mobile POST `/payments` (idempotent per requestId), admin GET
@@ -130,16 +131,42 @@ deploy/CLOUD_RUN.md    step-by-step trial deployment: Cloud Run + Neon + Secret 
 - Appearance: public GET.
 - WebSocket `/api/v1/events`: first-frame auth, audience filtering, heartbeat
   re-checks the session, closes 4401 on sign-out.
+- Verification requests (Step 5, migration 005): a mechanic submits (one pending
+  per account), the console lists/filters/decides (approve/reject/escalate, each
+  gated by its permission; admins hold all), ownership hides other mechanics'
+  requests as 404, decisions write `moderator_activity` and `admin_audit_log` and
+  publish `verification_request.updated` to the owner and the console.
+- Code delivery (Step 8, no migration): password-reset codes go through a
+  `CodeDelivery` driver (`src/delivery`) — `log` prints in dev and refuses in
+  production; `smtp` sends real email through any provider (nodemailer), with
+  the password from Secret Manager. Reset requests are limited per email as
+  well as per IP. SMS is a future driver behind the same interface.
+- Object storage (Step 7, no migration): a `Storage` abstraction (`src/storage`)
+  with a disk driver for dev/tests and a single-instance demo; uploads are
+  validated by magic bytes, not the declared type. Mechanics attach documents to
+  their pending request (`POST /verification-requests/:id/documents`), each
+  served by a short-lived signed URL through `GET /api/v1/files/*`; the Sign In
+  background (appearance PUT/DELETE) is stored under a `public/` prefix and
+  served without a signature. On Cloud Run the disk is ephemeral — a real
+  deployment swaps in a cloud driver (GCS); the interface does not change.
+- Moderator directory and audit log (Step 6, no migration): admin creates a
+  moderator (role set at INSERT, temp password hashed), lists them with
+  `actionsHandled`, replaces permissions (immediate, read from the DB each
+  request), updates profile, and removes one (status suspended + sessions
+  revoked, so access ends next request). Roster changes write `admin_audit_log`;
+  `listAuditLog` reads that one stream, so it already includes Step 5 queue
+  decisions. Mutations publish `moderator.updated`. Note: the display `role`
+  label is always "Moderator" (no column to persist a custom label).
 - Security plugins, docs, health routes.
 - Scripts: migrate, seed-admin, gen-secrets, export-openapi.
 - Dockerfile, docker-compose.yml, .env.example.
 - Test suite (10 files) on PGlite.
 
-### Stubbed — 501 `not_implemented`, full schema and guards in place
+### Implemented since the last hosting snapshot
 
-- `AccountVerificationApi`: list, submit, get, decide, activity.
-- `ModeratorDirectoryApi`: list, create, remove, permissions, profile, audit log.
-- `PlatformAppearanceApi`: PUT (multipart upload) and DELETE.
+Every contract endpoint now returns real data. Verification (Step 5), the
+moderator directory (Step 6), and object storage — document upload and the Sign
+In background — (Step 7) are all live. Nothing answers `501` anymore.
 
 ### Verified (2026-09-11)
 
@@ -197,20 +224,22 @@ deploy/CLOUD_RUN.md    step-by-step trial deployment: Cloud Run + Neon + Secret 
 | POST | /auth/password | AuthApi.changePassword | bearer | live |
 | POST | /auth/password/reset | AuthApi.resetPassword (step 1) | public | live |
 | POST | /auth/password/reset/confirm | AuthApi.resetPassword (step 2) | public | live |
-| GET | /verification-requests | listRequests | admin, moderator | 501 |
-| POST | /verification-requests | submit | mechanic | 501 |
-| GET | /verification-requests/:id | findRequest | bearer (owner or console) | 501 |
-| POST | /verification-requests/:id/decision | decide | admin, moderator + permission | 501 |
-| GET | /moderation/activity | listActivity | admin, moderator | 501 |
-| GET/POST | /moderators | listModerators / createModerator | admin | 501 |
-| DELETE | /moderators/:id | removeModerator | admin | 501 |
-| PUT | /moderators/:id/permissions | updatePermissions | admin | 501 |
-| PATCH | /moderators/:id/profile | updateProfile | admin | 501 |
-| GET | /audit-log | listAuditLog | admin | 501 |
+| GET | /verification-requests | listRequests | admin, moderator | live |
+| POST | /verification-requests | submit | mechanic | live |
+| GET | /verification-requests/:id | findRequest | bearer (owner or console) | live |
+| POST | /verification-requests/:id/decision | decide | admin, moderator + permission | live |
+| GET | /moderation/activity | listActivity | admin, moderator | live |
+| GET/POST | /moderators | listModerators / createModerator | admin | live |
+| DELETE | /moderators/:id | removeModerator | admin | live |
+| PUT | /moderators/:id/permissions | updatePermissions | admin | live |
+| PATCH | /moderators/:id/profile | updateProfile | admin | live |
+| GET | /audit-log | listAuditLog | admin | live |
 | POST | /payments | reportCompletedPayment | client, mechanic | live |
 | GET | /revenue/summary | fetchSummary | admin | live |
 | GET | /platform/appearance | PlatformAppearanceApi.fetch | public | live |
-| PUT/DELETE | /platform/appearance | publishBackground / clearBackground | console + canChangeBackground | 501 |
+| PUT/DELETE | /platform/appearance | publishBackground / clearBackground | console + canChangeBackground | live |
+| POST | /verification-requests/:id/documents | (addition) attach a document | mechanic (owner), while pending | live |
+| GET | /files/* | (addition) serve a stored file | public (`public/`) or a valid signed URL | live |
 | GET | /platform/points-policy | PointsPolicyApi.fetch | public | live |
 | PUT | /platform/points-policy | PointsPolicyApi.update | admin | live |
 | POST | /locations | LocationApi.reportLocation | bearer | not registered (Step 10a) |
@@ -230,7 +259,7 @@ deploy/CLOUD_RUN.md    step-by-step trial deployment: Cloud Run + Neon + Secret 
    `client` and `demo-mechanic` were local shortcuts and do not exist here.
 5. Access tokens expire in 10 minutes; clients must refresh on `token_expired`.
 6. `watch*` streams are one WebSocket with the protocol in
-   `src/routes/v1/events.ts`. Event names so far: `points_policy.updated`.
+   `src/routes/v1/events.ts`. Event names so far: `points_policy.updated`, `verification_request.updated`, `moderator.updated`, `platform_appearance.updated`.
 7. `ModerationDecision.actorName`/`actorId` are accepted and ignored; the
    actor is the token holder.
 8. The jobs domain (help requests, quotes, ETA, chat, reviews, QR payments)

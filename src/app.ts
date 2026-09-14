@@ -1,11 +1,14 @@
+import multipart from '@fastify/multipart';
 import type { TypeBoxTypeProvider } from '@fastify/type-provider-typebox';
 import websocket from '@fastify/websocket';
 import Fastify, { type FastifyBaseLogger } from 'fastify';
 import type { Redis } from 'ioredis';
 import type { AppConfig } from './config/env.js';
 import type { CodeDelivery } from './context.js';
+import { createCodeDelivery } from './delivery/code-delivery.js';
 import type { Database } from './db/database.js';
 import type { EventBus } from './events/bus.js';
+import { createStorage, type Storage } from './storage/storage.js';
 import { logger } from './logging/logger.js';
 import { registerDocs } from './plugins/docs.js';
 import { registerErrorHandling } from './plugins/errors.js';
@@ -21,6 +24,7 @@ export interface AppDeps {
   events: EventBus;
   redis?: Redis;
   codeDelivery?: CodeDelivery;
+  storage?: Storage;
 }
 
 /**
@@ -57,12 +61,18 @@ export async function buildApp(deps: AppDeps) {
   base.decorate('config', config);
   base.decorate('db', deps.db);
   base.decorate('events', deps.events);
-  base.decorate('codeDelivery', deps.codeDelivery ?? createLogCodeDelivery(config));
+  base.decorate('codeDelivery', deps.codeDelivery ?? createCodeDelivery(config));
+  base.decorate('storage', deps.storage ?? createStorage(config));
 
   registerErrorHandling(base);
   await registerDocs(base, config);
   await registerSecurity(base, config, deps.redis);
   await base.register(websocket, { options: { maxPayload: 16 * 1024 } });
+  // Uploads: one file per request; the plugin caps bytes at the larger limit
+  // and each route enforces its own (documents vs the smaller background).
+  await base.register(multipart, {
+    limits: { fileSize: config.MAX_DOCUMENT_BYTES, files: 1, fields: 20 },
+  });
 
   // Same instance, typed for TypeBox schemas from here on.
   const app = base.withTypeProvider<TypeBoxTypeProvider>();
@@ -73,23 +83,3 @@ export async function buildApp(deps: AppDeps) {
 }
 
 export type App = Awaited<ReturnType<typeof buildApp>>;
-
-/**
- * Until a mail or SMS provider is wired in, a reset code has nowhere to go.
- * Outside production it is logged so a developer can complete the flow; in
- * production it is deliberately NOT logged, and the gap is reported instead.
- */
-function createLogCodeDelivery(config: AppConfig): CodeDelivery {
-  return {
-    async deliverPasswordResetCode({ email, code, expiresInSeconds }) {
-      if (config.NODE_ENV === 'production') {
-        logger.error({ email }, 'password reset requested but no code delivery provider is configured');
-        return;
-      }
-      logger.warn(
-        { email, resetCode: code, expiresInSeconds },
-        'DEV ONLY — password reset code (no delivery provider configured)',
-      );
-    },
-  };
-}

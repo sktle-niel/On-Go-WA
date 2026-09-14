@@ -79,6 +79,10 @@ const schema = z
 
     PASSWORD_RESET_CODE_TTL_SECONDS: durationSeconds(600),
     PASSWORD_RESET_MAX_ATTEMPTS: z.coerce.number().int().min(1).max(20).default(5),
+    /** Cap on reset codes issued to one account in the window, so a single
+     *  inbox cannot be flooded even from many IPs. */
+    PASSWORD_RESET_EMAIL_MAX: z.coerce.number().int().min(1).max(50).default(5),
+    PASSWORD_RESET_EMAIL_WINDOW_SECONDS: durationSeconds(3600),
 
     // ── Database ────────────────────────────────────────────────────────────
     PGHOST: z.string().min(1),
@@ -123,15 +127,55 @@ const schema = z
     /** Answer 503 above this event loop utilization (0–1). 0 disables. */
     LOAD_SHED_MAX_EVENT_LOOP_UTILIZATION: z.coerce.number().min(0).max(1).default(0.98),
 
+    // ── Object storage ───────────────────────────────────────────────────────
+    /** Where uploaded files live. `disk` is for dev/tests and a single-instance
+     *  demo; a cloud driver (GCS/S3) is swapped in for real deployments. */
+    STORAGE_DRIVER: z.enum(['disk']).default('disk'),
+    /** Directory the disk driver writes to (relative to the working dir). */
+    UPLOAD_DIR: z.string().min(1).default('uploads'),
+    /** How long a signed link to a private document stays valid. */
+    FILE_URL_TTL_SECONDS: durationSeconds(600),
+    /** Most documents one verification request may hold, so a single account
+     *  cannot fill storage by uploading without bound. */
+    MAX_DOCUMENTS_PER_REQUEST: z.coerce.number().int().min(1).max(100).default(20),
+    /** Upload ceilings, enforced on the bytes actually received. Documents
+     *  accept images and PDF; the background accepts images only. */
+    MAX_DOCUMENT_BYTES: z.coerce.number().int().min(1024).default(10 * 1024 * 1024),
+    MAX_BACKGROUND_BYTES: z.coerce.number().int().min(1024).default(5 * 1024 * 1024),
+
+    // ── Code delivery (password reset) ────────────────────────────────────────
+    /** `log` prints the code (dev only); `smtp` sends real email through any
+     *  SMTP provider. Selecting `smtp` requires the SMTP_* settings below. */
+    DELIVERY_DRIVER: z.enum(['log', 'smtp']).default('log'),
+    SMTP_HOST: z.string().min(1).optional(),
+    SMTP_PORT: z.coerce.number().int().min(1).max(65535).default(587),
+    /** True for implicit TLS (port 465); false for STARTTLS (587). */
+    SMTP_SECURE: flag.optional(),
+    SMTP_USER: z.string().min(1).optional(),
+    /** From Secret Manager in a deployed environment, never committed. */
+    SMTP_PASSWORD: z.string().min(1).optional(),
+    /** The From address, e.g. no-reply@ongo.example. */
+    SMTP_FROM: z.string().regex(/^[^@\s]+@[^@\s]+\.[^@\s]+$/).optional(),
+    SMTP_FROM_NAME: z.string().min(1).default('On Go'),
+
     // ── Reporting ───────────────────────────────────────────────────────────
     /** The calendar the revenue ledger is bucketed by month in. */
     REVENUE_TIMEZONE: z.string().min(1).default('Asia/Manila'),
   })
   .superRefine((env, ctx) => {
-    if (env.NODE_ENV !== 'production') return;
-
     const fail = (path: string, message: string) =>
       ctx.addIssue({ code: 'custom', path: [path], message });
+
+    // Choosing the SMTP driver means its connection settings are mandatory,
+    // in every environment — a half-configured sender fails silently at send.
+    if (env.DELIVERY_DRIVER === 'smtp') {
+      if (!env.SMTP_HOST) fail('SMTP_HOST', 'required when DELIVERY_DRIVER=smtp');
+      if (!env.SMTP_USER) fail('SMTP_USER', 'required when DELIVERY_DRIVER=smtp');
+      if (!env.SMTP_PASSWORD) fail('SMTP_PASSWORD', 'required when DELIVERY_DRIVER=smtp');
+      if (!env.SMTP_FROM) fail('SMTP_FROM', 'required when DELIVERY_DRIVER=smtp');
+    }
+
+    if (env.NODE_ENV !== 'production') return;
 
     if (env.CORS_ALLOWED_ORIGINS.length === 0 && !env.CORS_ALLOW_LOCALHOST) {
       fail('CORS_ALLOWED_ORIGINS', 'must list explicit origins in production');

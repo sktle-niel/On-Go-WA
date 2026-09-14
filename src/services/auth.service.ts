@@ -439,6 +439,27 @@ export async function requestPasswordReset(
     return;
   }
 
+  // Per-email ceiling: the IP rate limit stops one client spamming; this stops
+  // many clients flooding one inbox. Over the limit, answer as normal (202) but
+  // issue nothing.
+  const recent = await db.queryOne<{ n: number }>(
+    `SELECT count(*)::int AS n FROM password_reset_codes
+       WHERE user_id = $1 AND created_at > now() - ($2::int * interval '1 second')`,
+    [user.id, config.PASSWORD_RESET_EMAIL_WINDOW_SECONDS],
+  );
+  if ((recent?.n ?? 0) >= config.PASSWORD_RESET_EMAIL_MAX) {
+    await recordSecurityEvent(db, {
+      event: SecurityEvent.PASSWORD_RESET_REQUESTED,
+      severity: 'warning',
+      actorId: user.id,
+      actorRole: user.role,
+      ipHash: meta.ipHash,
+      requestId: meta.requestId,
+      metadata: { outcome: 'rate_limited_email' },
+    });
+    return;
+  }
+
   const code = randomInt(0, 1_000_000).toString().padStart(6, '0');
   const expiresAt = new Date(Date.now() + config.PASSWORD_RESET_CODE_TTL_SECONDS * 1000);
 
