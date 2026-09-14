@@ -284,6 +284,10 @@ Verified 2026-09-11 and to be kept true:
 
 ### Working rules (coding sessions)
 
+- **The repository shows only its owner.** Every commit is authored and
+  committed by the owner's git identity (`sktle-niel`). No `Co-Authored-By`,
+  session or tool trailers in commit messages or PR descriptions; no
+  development-tool or model-vendor names in committed files.
 - **No subagents or multi-agent workflows without the user's approval.**
   Work solo with Read/Grep/Bash unless a fan-out is explicitly approved.
 - **Save tokens.** Lean replies, one feature per session, `/compact` when the
