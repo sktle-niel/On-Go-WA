@@ -1,6 +1,7 @@
 import type { FastifyPluginAsyncTypebox } from '@fastify/type-provider-typebox';
 import { Type } from '@fastify/type-provider-typebox';
-import { requireAuth } from '../../auth/guard.js';
+import type { FastifyRequest } from 'fastify';
+import { currentAuth, requireAuth } from '../../auth/guard.js';
 import { Permissions } from '../../schemas/auth.js';
 import { errorResponses, IdParams, NoContent } from '../../schemas/common.js';
 import {
@@ -10,17 +11,30 @@ import {
   RemoveModeratorQuery,
   UpdateProfileBody,
 } from '../../schemas/moderators.js';
-import { notImplemented } from '../../utils/errors.js';
+import {
+  createModerator,
+  listAuditLog,
+  listModerators,
+  removeModerator,
+  updateModeratorPermissions,
+  updateModeratorProfile,
+  type AdminActionMeta,
+} from '../../services/moderators.service.js';
+import { clientIp, clientIpHash } from '../../utils/ip.js';
 
 /**
- * ModeratorDirectoryApi — the roster and its audit trail. Admin only.
+ * ModeratorDirectoryApi and the audit log — admin only.
  *
- * Routes, guards and schemas are final; handlers answer 501 until the
- * moderator domain is implemented.
+ * The audit log merges roster changes written here with the queue decisions
+ * the verification service writes; both live in admin_audit_log.
  */
 export const moderatorRoutes: FastifyPluginAsyncTypebox = async (app) => {
   const admin = [requireAuth({ roles: ['admin'] })];
-  const pending = 'The moderator directory is being implemented.';
+  const meta = (request: FastifyRequest): AdminActionMeta => ({
+    ip: clientIp(request),
+    ipHash: clientIpHash(request),
+    requestId: request.id,
+  });
 
   app.get(
     '/moderators',
@@ -29,14 +43,12 @@ export const moderatorRoutes: FastifyPluginAsyncTypebox = async (app) => {
       schema: {
         tags: ['Moderators'],
         summary: 'List moderators',
-        description: 'ModeratorDirectoryApi.listModerators.',
+        description: 'ModeratorDirectoryApi.listModerators. Newest first, active and inactive.',
         security: [{ bearerAuth: [] }],
-        response: { 200: Type.Array(ModeratorAccount), ...errorResponses(401, 403, 501) },
+        response: { 200: Type.Array(ModeratorAccount), ...errorResponses(401, 403) },
       },
     },
-    async () => {
-      throw notImplemented(pending);
-    },
+    async () => listModerators(app.db),
   );
 
   app.post(
@@ -46,14 +58,28 @@ export const moderatorRoutes: FastifyPluginAsyncTypebox = async (app) => {
       schema: {
         tags: ['Moderators'],
         summary: 'Create a moderator',
-        description: 'ModeratorDirectoryApi.createModerator. The temporary password is hashed and never stored in clear.',
+        description:
+          'ModeratorDirectoryApi.createModerator. The temporary password is hashed and never stored ' +
+          'in clear. The new moderator signs in on the console with it.',
         security: [{ bearerAuth: [] }],
         body: CreateModeratorBody,
-        response: { 201: ModeratorAccount, ...errorResponses(400, 401, 403, 409, 501) },
+        response: { 201: ModeratorAccount, ...errorResponses(400, 401, 403, 409) },
       },
     },
-    async () => {
-      throw notImplemented(pending);
+    async (request, reply) => {
+      const dto = await createModerator(
+        app.db,
+        app.events,
+        currentAuth(request),
+        {
+          name: request.body.name,
+          email: request.body.email,
+          temporaryPassword: request.body.temporaryPassword,
+          permissions: request.body.permissions,
+        },
+        meta(request),
+      );
+      return reply.code(201).send(dto);
     },
   );
 
@@ -64,15 +90,18 @@ export const moderatorRoutes: FastifyPluginAsyncTypebox = async (app) => {
       schema: {
         tags: ['Moderators'],
         summary: 'Remove a moderator',
-        description: 'ModeratorDirectoryApi.removeModerator. Deactivates the account and revokes its sessions.',
+        description:
+          'ModeratorDirectoryApi.removeModerator. Deactivates the account and revokes its sessions, ' +
+          'so access ends on the next request.',
         security: [{ bearerAuth: [] }],
         params: IdParams,
         querystring: RemoveModeratorQuery,
-        response: { 204: NoContent, ...errorResponses(401, 403, 404, 501) },
+        response: { 204: NoContent, ...errorResponses(401, 403, 404) },
       },
     },
-    async () => {
-      throw notImplemented(pending);
+    async (request, reply) => {
+      await removeModerator(app.db, app.events, currentAuth(request), request.params.id, request.query.reason ?? null, meta(request));
+      return reply.code(204).send(null);
     },
   );
 
@@ -87,12 +116,11 @@ export const moderatorRoutes: FastifyPluginAsyncTypebox = async (app) => {
         security: [{ bearerAuth: [] }],
         params: IdParams,
         body: Permissions,
-        response: { 200: ModeratorAccount, ...errorResponses(400, 401, 403, 404, 501) },
+        response: { 200: ModeratorAccount, ...errorResponses(400, 401, 403, 404) },
       },
     },
-    async () => {
-      throw notImplemented(pending);
-    },
+    async (request) =>
+      updateModeratorPermissions(app.db, app.events, currentAuth(request), request.params.id, request.body, meta(request)),
   );
 
   app.patch(
@@ -102,16 +130,22 @@ export const moderatorRoutes: FastifyPluginAsyncTypebox = async (app) => {
       schema: {
         tags: ['Moderators'],
         summary: 'Update a moderator’s profile',
-        description: 'ModeratorDirectoryApi.updateProfile.',
+        description: 'ModeratorDirectoryApi.updateProfile. Name and/or photo; send `photoUrl: null` to clear it.',
         security: [{ bearerAuth: [] }],
         params: IdParams,
         body: UpdateProfileBody,
-        response: { 200: ModeratorAccount, ...errorResponses(400, 401, 403, 404, 501) },
+        response: { 200: ModeratorAccount, ...errorResponses(400, 401, 403, 404) },
       },
     },
-    async () => {
-      throw notImplemented(pending);
-    },
+    async (request) =>
+      updateModeratorProfile(
+        app.db,
+        app.events,
+        currentAuth(request),
+        request.params.id,
+        { name: request.body.name, photoUrl: request.body.photoUrl },
+        meta(request),
+      ),
   );
 
   app.get(
@@ -123,11 +157,9 @@ export const moderatorRoutes: FastifyPluginAsyncTypebox = async (app) => {
         summary: 'The audit log',
         description: 'ModeratorDirectoryApi.listAuditLog. Roster changes and queue decisions, newest first.',
         security: [{ bearerAuth: [] }],
-        response: { 200: Type.Array(AuditEntry), ...errorResponses(401, 403, 501) },
+        response: { 200: Type.Array(AuditEntry), ...errorResponses(401, 403) },
       },
     },
-    async () => {
-      throw notImplemented(pending);
-    },
+    async () => listAuditLog(app.db),
   );
 };

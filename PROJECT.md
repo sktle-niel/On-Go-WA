@@ -135,6 +135,14 @@ deploy/CLOUD_RUN.md    step-by-step trial deployment: Cloud Run + Neon + Secret 
   gated by its permission; admins hold all), ownership hides other mechanics'
   requests as 404, decisions write `moderator_activity` and `admin_audit_log` and
   publish `verification_request.updated` to the owner and the console.
+- Moderator directory and audit log (Step 6, no migration): admin creates a
+  moderator (role set at INSERT, temp password hashed), lists them with
+  `actionsHandled`, replaces permissions (immediate, read from the DB each
+  request), updates profile, and removes one (status suspended + sessions
+  revoked, so access ends next request). Roster changes write `admin_audit_log`;
+  `listAuditLog` reads that one stream, so it already includes Step 5 queue
+  decisions. Mutations publish `moderator.updated`. Note: the display `role`
+  label is always "Moderator" (no column to persist a custom label).
 - Security plugins, docs, health routes.
 - Scripts: migrate, seed-admin, gen-secrets, export-openapi.
 - Dockerfile, docker-compose.yml, .env.example.
@@ -142,7 +150,6 @@ deploy/CLOUD_RUN.md    step-by-step trial deployment: Cloud Run + Neon + Secret 
 
 ### Stubbed — 501 `not_implemented`, full schema and guards in place
 
-- `ModeratorDirectoryApi`: list, create, remove, permissions, profile, audit log.
 - `PlatformAppearanceApi`: PUT (multipart upload) and DELETE.
 
 ### Verified (2026-09-11)
@@ -206,11 +213,11 @@ deploy/CLOUD_RUN.md    step-by-step trial deployment: Cloud Run + Neon + Secret 
 | GET | /verification-requests/:id | findRequest | bearer (owner or console) | live |
 | POST | /verification-requests/:id/decision | decide | admin, moderator + permission | live |
 | GET | /moderation/activity | listActivity | admin, moderator | live |
-| GET/POST | /moderators | listModerators / createModerator | admin | 501 |
-| DELETE | /moderators/:id | removeModerator | admin | 501 |
-| PUT | /moderators/:id/permissions | updatePermissions | admin | 501 |
-| PATCH | /moderators/:id/profile | updateProfile | admin | 501 |
-| GET | /audit-log | listAuditLog | admin | 501 |
+| GET/POST | /moderators | listModerators / createModerator | admin | live |
+| DELETE | /moderators/:id | removeModerator | admin | live |
+| PUT | /moderators/:id/permissions | updatePermissions | admin | live |
+| PATCH | /moderators/:id/profile | updateProfile | admin | live |
+| GET | /audit-log | listAuditLog | admin | live |
 | POST | /payments | reportCompletedPayment | client, mechanic | live |
 | GET | /revenue/summary | fetchSummary | admin | live |
 | GET | /platform/appearance | PlatformAppearanceApi.fetch | public | live |
@@ -234,7 +241,7 @@ deploy/CLOUD_RUN.md    step-by-step trial deployment: Cloud Run + Neon + Secret 
    `client` and `demo-mechanic` were local shortcuts and do not exist here.
 5. Access tokens expire in 10 minutes; clients must refresh on `token_expired`.
 6. `watch*` streams are one WebSocket with the protocol in
-   `src/routes/v1/events.ts`. Event names so far: `points_policy.updated`, `verification_request.updated`.
+   `src/routes/v1/events.ts`. Event names so far: `points_policy.updated`, `verification_request.updated`, `moderator.updated`.
 7. `ModerationDecision.actorName`/`actorId` are accepted and ignored; the
    actor is the token holder.
 8. The jobs domain (help requests, quotes, ETA, chat, reviews, QR payments)

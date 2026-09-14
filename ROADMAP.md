@@ -174,23 +174,23 @@ conflict, console-only listing, filters, ownership 404, approve/reject/escalate,
 permission denial, the actor-is-the-token-holder rule, and the delivered event.
 Documents themselves still wait for Step 7.
 
-## Step 6 — Moderator directory and audit log `[ ]`
+## Step 6 — Moderator directory and audit log `[x]` (done 2026-09-14)
 
 **Goal.** Admins manage moderators without touching SQL.
 
 **Tasks.**
-- [ ] `services/moderators.service.ts`: create (hash temporary password,
+- [x] `services/moderators.service.ts`: create (hash temporary password,
       insert user + permissions row, audit `added`), list with
       `actionsHandled` counted from `moderator_activity`, remove (status
       `inactive`, revoke sessions, audit `removed`), update permissions
       (audit `promoted`, publish `moderator.updated` so the console session
       refreshes), update profile.
-- [ ] `listAuditLog` merging roster changes and queue decisions, newest first,
+- [x] `listAuditLog` merging roster changes and queue decisions, newest first,
       with `actorRole` and `ipAddress`.
-- [ ] Record the caller's IP on audit rows (`ip_address inet`), not a hash.
-- [ ] Integration tests for each operation and for a removed moderator being
+- [x] Record the caller's IP on audit rows (`ip_address inet`), not a hash.
+- [x] Integration tests for each operation and for a removed moderator being
       signed out on their next request.
-- [ ] Replace the 501 handlers in `routes/v1/moderators.ts`.
+- [x] Replace the 501 handlers in `routes/v1/moderators.ts`.
 
 **Done when.** The console's Moderators, Add Moderator and Audit Log pages can
 run entirely against the API.
@@ -198,6 +198,16 @@ run entirely against the API.
 **Model.** Top-tier model.
 
 ---
+
+**Result (2026-09-14).** No migration needed. `services/moderators.service.ts`
+and live routes replace the 501 stubs: create (role set at INSERT, temp password
+hashed, permissions row), list with `actionsHandled` from `moderator_activity`,
+replace permissions, update profile, and remove (status suspended + sessions
+revoked). `listAuditLog` reads `admin_audit_log`, which already holds Step 5
+queue decisions, so the log is one merged stream. Mutations publish
+`moderator.updated`. 7 integration tests, including a removed moderator locked
+out on the next request and the merged audit log. The display role label is
+always "Moderator" (no column persists a custom label).
 
 ## Step 7 — Object storage `[ ]`
 
