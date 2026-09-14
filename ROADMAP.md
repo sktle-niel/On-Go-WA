@@ -237,7 +237,9 @@ mobile app paints a background published from the console.
 
 **Tasks.**
 - [x] `git init`, first commit pushed to `github.com/sktle-niel/On-Go-WA` (2026-09-14).
-- [ ] GitHub Actions: typecheck, test, build, Docker build on every push.
+- [x] GitHub Actions (2026-09-14): typecheck, test, build, npm audit, secret
+      scan and gitleaks on every push to main/development and every PR. The
+      Docker build stays in Cloud Build.
 - [ ] Infrastructure as code (Terraform or CDK): VPC, RDS Postgres 16 with
       `rds.force_ssl=1`, ElastiCache Redis, S3 bucket, Secrets Manager
       secrets, ECS Fargate service (or App Runner) behind an ALB with AWS

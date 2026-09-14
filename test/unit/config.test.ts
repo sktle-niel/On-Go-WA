@@ -37,7 +37,8 @@ test('production refuses permissive settings and names only the keys', () => {
     (err: Error) =>
       err.message.includes('CORS_ALLOWED_ORIGINS') &&
       err.message.includes('PGSSLMODE') &&
-      !err.message.includes('test-signing-key'),
+      // The message names offending keys, never their values.
+      !err.message.includes(process.env.JWT_SIGNING_KEY ?? 'JWT_SIGNING_KEY_VALUE'),
   );
 });
 

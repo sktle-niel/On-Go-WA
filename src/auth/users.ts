@@ -124,6 +124,17 @@ export function recordSuccessfulLogin(db: Queryable, userId: string): Promise<un
 /**
  * Also moves `tokens_valid_from`, which retires every access token issued
  * before this moment — the holder of a stolen token is out on the next request.
+ *
+ * The cut-off is set one second AHEAD of now, not to now, because a JWT `iat`
+ * has one-second resolution and every token issued in the current second may
+ * already carry `iat = ceil(previous tokens_valid_from)`, which rounds up into
+ * this same second (see tokensValidFromSeconds and issueAccessToken). Setting
+ * the cut-off to `now()` would leave those tokens with `iat == ceil(cut-off)`,
+ * and the guard's strict `>` would keep them alive for the rest of the second —
+ * so a password changed within a second of sign-in would not retire the old
+ * access token. Advancing a full second guarantees `ceil(cut-off)` exceeds any
+ * `iat` issued up to now; the replacement token minted right after this uses
+ * `ceil(tokens_valid_from)` as its own `iat`, so it stays valid.
  */
 export async function updatePassword(
   db: Queryable,
@@ -132,7 +143,8 @@ export async function updatePassword(
 ): Promise<{ tokensValidFrom: Date }> {
   const row = await db.queryOne<{ tokens_valid_from: Date }>(
     `UPDATE users
-        SET password_hash = $2, password_changed_at = now(), tokens_valid_from = now()
+        SET password_hash = $2, password_changed_at = now(),
+            tokens_valid_from = now() + interval '1 second'
       WHERE id = $1
       RETURNING tokens_valid_from`,
     [userId, passwordHash],

@@ -1,3 +1,4 @@
+import { randomBytes } from 'node:crypto';
 import { mkdir, writeFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
 
@@ -5,17 +6,22 @@ import { resolve } from 'node:path';
  * Writes openapi/openapi.json from the route schemas, with no database and no
  * secrets: the document is a property of the code, not of an environment.
  * Hand the file to the front-end developer, or feed it to a client generator.
+ *
+ * The signing key and pepper below only exist to satisfy config validation so
+ * the app can boot far enough to emit its schema; their values never reach the
+ * output. They are generated at runtime, not written as literals, so no
+ * secret-shaped string sits in the source.
  */
 
 const defaults: Record<string, string> = {
   NODE_ENV: 'development',
   LOG_LEVEL: 'silent',
-  JWT_SIGNING_KEY: 'openapi-export-only-not-a-real-key-0123456789',
-  PASSWORD_PEPPER: 'openapi-export-only-pepper',
+  JWT_SIGNING_KEY: randomBytes(48).toString('base64url'),
+  PASSWORD_PEPPER: randomBytes(24).toString('base64url'),
   PGHOST: 'localhost',
   PGDATABASE: 'ongo',
   PGUSER: 'ongo',
-  PGPASSWORD: 'ongo',
+  PGPASSWORD: 'placeholder',
   PGSSLMODE: 'disable',
 };
 for (const [key, fallback] of Object.entries(defaults)) {

@@ -1,0 +1,5 @@
+# Line endings: LF in the repository; hooks and scripts must stay LF on every OS.
+* text=auto
+.githooks/* text eol=lf
+*.sh text eol=lf
+*.mjs text eol=lf

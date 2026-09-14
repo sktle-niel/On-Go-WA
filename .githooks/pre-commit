@@ -1,0 +1,5 @@
+#!/bin/sh
+# Refuses a commit that stages an environment file, key material, or anything
+# that looks like a credential. Enabled by `npm install` (scripts/setup-hooks.mjs).
+# Do not bypass with --no-verify; see SECURITY.md.
+exec node scripts/check-secrets.mjs --staged

@@ -4,22 +4,24 @@
 #   docker compose --profile redis up -d → + Redis (set REDIS_URL=redis://localhost:6379)
 #   docker compose --profile full up     → + the API itself, built from this folder
 #
-# The dev credentials below are for THIS machine only. A deployed database
-# uses the roles in migrations/002 and credentials from Secrets Manager.
+# Credentials come from .env (copy .env.example and set PGPASSWORD); nothing in
+# this file is a password. A deployed database uses the roles in migrations/002
+# and credentials from Secret Manager.
 
 services:
   db:
     image: postgres:16-alpine
     environment:
-      POSTGRES_DB: ongo
-      POSTGRES_USER: ongo
-      POSTGRES_PASSWORD: ongo
+      POSTGRES_DB: ${PGDATABASE:-ongo}
+      POSTGRES_USER: ${PGUSER:-ongo}
+      # Value comes from .env (see the note at the top of this file).
+      POSTGRES_PASSWORD: ${PGPASSWORD}
     ports:
       - "5432:5432"
     volumes:
       - dbdata:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ongo -d ongo"]
+      test: ["CMD-SHELL", "pg_isready -U ${PGUSER:-ongo} -d ${PGDATABASE:-ongo}"]
       interval: 5s
       timeout: 3s
       retries: 10
@@ -40,9 +42,10 @@ services:
       PORT: 8080
       PGHOST: db
       PGPORT: 5432
-      PGDATABASE: ongo
-      PGUSER: ongo
-      PGPASSWORD: ongo
+      PGDATABASE: ${PGDATABASE:-ongo}
+      PGUSER: ${PGUSER:-ongo}
+      # Value comes from .env (see the note at the top of this file).
+      PGPASSWORD: ${PGPASSWORD}
       PGSSLMODE: disable
       REDIS_URL: redis://redis:6379
       JWT_SIGNING_KEY: ${JWT_SIGNING_KEY:?run `npm run secrets` and put the values in .env}

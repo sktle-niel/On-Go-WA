@@ -1,0 +1,7 @@
+# gitleaks configuration (used by CI). Default rules plus one allowlist.
+[extend]
+useDefault = true
+
+[allowlist]
+description = "The initial commit held placeholder values (ongo, test-signing-key-…, your-neon-password) that were not secrets; they were replaced in the next commits. Real secrets never enter this repository: see SECURITY.md."
+commits = ["8bebf9ab70a2405db23f244ff33b30a02e2dc6fd"]
