@@ -3,6 +3,7 @@ import { appearanceRoutes } from './appearance.js';
 import { authRoutes } from './auth.js';
 import { eventRoutes } from './events.js';
 import { filesRoutes } from './files.js';
+import { jobRoutes } from './jobs.js';
 import { moderatorRoutes } from './moderators.js';
 import { pointsRoutes } from './points.js';
 import { revenueRoutes } from './revenue.js';
@@ -21,4 +22,5 @@ export const v1Routes: FastifyPluginAsyncTypebox = async (app) => {
   await app.register(pointsRoutes);
   await app.register(eventRoutes);
   await app.register(filesRoutes);
+  await app.register(jobRoutes);
 };

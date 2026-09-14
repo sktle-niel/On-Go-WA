@@ -255,6 +255,10 @@ real deployment needs a GCS driver (see `deploy/CLOUD_RUN.md` §9).
 | POST | /locations | LocationApi.reportLocation | bearer | not registered (Step 10a) |
 | GET | /users/:userId/location | LocationApi.fetchLastKnown | owner, console | not registered (Step 10a) |
 | GET | /mechanics/:mechanicId/nearby-jobs | LocationApi.findNearbyJobIds | mechanic (self), console | not registered (Step 10a) |
+| POST | /service-requests | (addition) book a request | client | live |
+| GET | /service-requests | (addition) list open / mine | bearer | live |
+| GET | /service-requests/:id | (addition) one request | owner / mechanic / console | live |
+| POST | /service-requests/:id/cancel | (addition) cancel own pending | client | live |
 | WS | /events | every `watch*` | first-frame auth | live |
 | GET | /health/live, /health/ready | — | public | live |
 

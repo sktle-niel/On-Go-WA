@@ -328,7 +328,7 @@ it lands with or right after the first slice of Step 10.
 
 ---
 
-## Step 10 — The jobs domain `[ ]`
+## Step 10 — The jobs domain `[~]` (in progress; slice 1 done 2026-09-14)
 
 **Goal.** Help requests, quotes, ETA, chat, reviews and QR payments move from
 the mobile app's memory to the server, so two devices see the same job.
@@ -348,6 +348,15 @@ the mobile app's memory to the server, so two devices see the same job.
 
 **Done when.** A client on one phone and a mechanic on another complete a job
 end to end through the API.
+
+**Slice 1 done (2026-09-14): service requests (booking).** Migration 006 adds
+location, surcharge and the cancel/expiry stamps to service_requests, plus a
+partial unique index for one active request per client. `jobs.service.ts` and
+`/service-requests` routes: book (client), list (`?scope=open` pool for
+mechanics, `?scope=mine` own/assigned), read (ownership-gated), cancel (guarded
+UPDATE). Concurrency proven by a two-rapid-bookings test. Events
+`service_request.created` / `.updated`. 7 tests. Next slices: quotes → accept
+(atomic claim) → status machine → chat → payments → reviews → leaderboard.
 
 **Model.** Plan on a top-tier model; implement slices on a mid-tier model; review
 money and state-machine code on a top model.
