@@ -130,6 +130,11 @@ deploy/CLOUD_RUN.md    step-by-step trial deployment: Cloud Run + Neon + Secret 
 - Appearance: public GET.
 - WebSocket `/api/v1/events`: first-frame auth, audience filtering, heartbeat
   re-checks the session, closes 4401 on sign-out.
+- Verification requests (Step 5, migration 005): a mechanic submits (one pending
+  per account), the console lists/filters/decides (approve/reject/escalate, each
+  gated by its permission; admins hold all), ownership hides other mechanics'
+  requests as 404, decisions write `moderator_activity` and `admin_audit_log` and
+  publish `verification_request.updated` to the owner and the console.
 - Security plugins, docs, health routes.
 - Scripts: migrate, seed-admin, gen-secrets, export-openapi.
 - Dockerfile, docker-compose.yml, .env.example.
@@ -137,7 +142,6 @@ deploy/CLOUD_RUN.md    step-by-step trial deployment: Cloud Run + Neon + Secret 
 
 ### Stubbed — 501 `not_implemented`, full schema and guards in place
 
-- `AccountVerificationApi`: list, submit, get, decide, activity.
 - `ModeratorDirectoryApi`: list, create, remove, permissions, profile, audit log.
 - `PlatformAppearanceApi`: PUT (multipart upload) and DELETE.
 
@@ -197,11 +201,11 @@ deploy/CLOUD_RUN.md    step-by-step trial deployment: Cloud Run + Neon + Secret 
 | POST | /auth/password | AuthApi.changePassword | bearer | live |
 | POST | /auth/password/reset | AuthApi.resetPassword (step 1) | public | live |
 | POST | /auth/password/reset/confirm | AuthApi.resetPassword (step 2) | public | live |
-| GET | /verification-requests | listRequests | admin, moderator | 501 |
-| POST | /verification-requests | submit | mechanic | 501 |
-| GET | /verification-requests/:id | findRequest | bearer (owner or console) | 501 |
-| POST | /verification-requests/:id/decision | decide | admin, moderator + permission | 501 |
-| GET | /moderation/activity | listActivity | admin, moderator | 501 |
+| GET | /verification-requests | listRequests | admin, moderator | live |
+| POST | /verification-requests | submit | mechanic | live |
+| GET | /verification-requests/:id | findRequest | bearer (owner or console) | live |
+| POST | /verification-requests/:id/decision | decide | admin, moderator + permission | live |
+| GET | /moderation/activity | listActivity | admin, moderator | live |
 | GET/POST | /moderators | listModerators / createModerator | admin | 501 |
 | DELETE | /moderators/:id | removeModerator | admin | 501 |
 | PUT | /moderators/:id/permissions | updatePermissions | admin | 501 |
@@ -230,7 +234,7 @@ deploy/CLOUD_RUN.md    step-by-step trial deployment: Cloud Run + Neon + Secret 
    `client` and `demo-mechanic` were local shortcuts and do not exist here.
 5. Access tokens expire in 10 minutes; clients must refresh on `token_expired`.
 6. `watch*` streams are one WebSocket with the protocol in
-   `src/routes/v1/events.ts`. Event names so far: `points_policy.updated`.
+   `src/routes/v1/events.ts`. Event names so far: `points_policy.updated`, `verification_request.updated`.
 7. `ModerationDecision.actorName`/`actorId` are accepted and ignored; the
    actor is the token holder.
 8. The jobs domain (help requests, quotes, ETA, chat, reviews, QR payments)

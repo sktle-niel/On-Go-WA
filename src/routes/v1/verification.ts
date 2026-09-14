@@ -1,6 +1,7 @@
 import type { FastifyPluginAsyncTypebox } from '@fastify/type-provider-typebox';
 import { Type } from '@fastify/type-provider-typebox';
-import { CONSOLE_ROLES, requireAuth } from '../../auth/guard.js';
+import type { FastifyRequest } from 'fastify';
+import { CONSOLE_ROLES, currentAuth, requireAuth } from '../../auth/guard.js';
 import { errorResponses, IdParams } from '../../schemas/common.js';
 import {
   AccountVerificationRequest,
@@ -10,17 +11,29 @@ import {
   ModerationDecisionBody,
   SubmitVerificationBody,
 } from '../../schemas/verification.js';
-import { notImplemented } from '../../utils/errors.js';
+import {
+  decideVerification,
+  findVerificationRequest,
+  listModerationActivity,
+  listVerificationRequests,
+  submitVerification,
+  type DecisionMeta,
+} from '../../services/verification.service.js';
+import { clientIp, clientIpHash } from '../../utils/ip.js';
 
 /**
  * AccountVerificationApi — the mobile → console → mobile round trip.
  *
- * The routes, guards and schemas are final; the handlers are the next piece
- * of work and answer 501 until then. Documented now so the front-end client
- * can be written against the real contract.
+ * The actor of every decision is the token holder; `actorName` / `actorId` in
+ * the body are accepted for wire compatibility and ignored. Each action needs
+ * its matching moderator permission, checked in the service; admins hold all.
  */
 export const verificationRoutes: FastifyPluginAsyncTypebox = async (app) => {
-  const pending = 'Verification requests are being implemented.';
+  const meta = (request: FastifyRequest): DecisionMeta => ({
+    ip: clientIp(request),
+    ipHash: clientIpHash(request),
+    requestId: request.id,
+  });
 
   app.get(
     '/verification-requests',
@@ -29,15 +42,18 @@ export const verificationRoutes: FastifyPluginAsyncTypebox = async (app) => {
       schema: {
         tags: ['Verification'],
         summary: 'List verification requests',
-        description: 'AccountVerificationApi.listRequests. Console roles only.',
+        description: 'AccountVerificationApi.listRequests. Console roles only. Newest first.',
         security: [{ bearerAuth: [] }],
         querystring: ListRequestsQuery,
-        response: { 200: Type.Array(AccountVerificationRequest), ...errorResponses(401, 403, 501) },
+        response: { 200: Type.Array(AccountVerificationRequest), ...errorResponses(401, 403) },
       },
     },
-    async () => {
-      throw notImplemented(pending);
-    },
+    async (request) =>
+      listVerificationRequests(app.db, {
+        status: request.query.status,
+        escalatedOnly: request.query.escalatedOnly,
+        search: request.query.search,
+      }),
   );
 
   app.post(
@@ -48,15 +64,16 @@ export const verificationRoutes: FastifyPluginAsyncTypebox = async (app) => {
         tags: ['Verification'],
         summary: 'File a verification request',
         description:
-          'AccountVerificationApi.submit. Called by the mechanic after registration. ' +
-          'Documents are uploaded separately (multipart) and attached by id.',
+          'AccountVerificationApi.submit. Filed by the mechanic. One request may be pending per ' +
+          'account (409 on a second). Documents are attached in Step 7; the names are carried now.',
         security: [{ bearerAuth: [] }],
         body: SubmitVerificationBody,
-        response: { 201: AccountVerificationRequest, ...errorResponses(400, 401, 403, 409, 501) },
+        response: { 201: AccountVerificationRequest, ...errorResponses(400, 401, 403, 409) },
       },
     },
-    async () => {
-      throw notImplemented(pending);
+    async (request, reply) => {
+      const dto = await submitVerification(app.db, app.events, currentAuth(request), request.body, meta(request));
+      return reply.code(201).send(dto);
     },
   );
 
@@ -68,16 +85,14 @@ export const verificationRoutes: FastifyPluginAsyncTypebox = async (app) => {
         tags: ['Verification'],
         summary: 'One verification request',
         description:
-          'AccountVerificationApi.findRequest. A mechanic sees only their own; console roles see any. ' +
-          'Changes stream on the event socket as `verification_request.updated`.',
+          'AccountVerificationApi.findRequest. A mechanic sees only their own (else 404); console ' +
+          'roles see any. Changes stream as `verification_request.updated`.',
         security: [{ bearerAuth: [] }],
         params: IdParams,
-        response: { 200: AccountVerificationRequest, ...errorResponses(401, 404, 501) },
+        response: { 200: AccountVerificationRequest, ...errorResponses(401, 404) },
       },
     },
-    async () => {
-      throw notImplemented(pending);
-    },
+    async (request) => findVerificationRequest(app.db, currentAuth(request), request.params.id),
   );
 
   app.post(
@@ -88,17 +103,24 @@ export const verificationRoutes: FastifyPluginAsyncTypebox = async (app) => {
         tags: ['Verification'],
         summary: 'Approve, reject or escalate',
         description:
-          'AccountVerificationApi.decide. The actor is the token holder, never the body. ' +
-          'Each action needs the matching moderator permission; admins hold all three.',
+          'AccountVerificationApi.decide. The actor is the token holder, never the body. Each action ' +
+          'needs the matching permission (approve / reject / escalate); admins hold all three. ' +
+          'Escalation keeps the request pending but flags it for an admin.',
         security: [{ bearerAuth: [] }],
         params: IdParams,
         body: ModerationDecisionBody,
-        response: { 200: AccountVerificationRequest, ...errorResponses(400, 401, 403, 404, 409, 501) },
+        response: { 200: AccountVerificationRequest, ...errorResponses(400, 401, 403, 404, 409) },
       },
     },
-    async () => {
-      throw notImplemented(pending);
-    },
+    async (request) =>
+      decideVerification(
+        app.db,
+        app.events,
+        currentAuth(request),
+        request.params.id,
+        { action: request.body.action, reason: request.body.reason },
+        meta(request),
+      ),
   );
 
   app.get(
@@ -108,14 +130,12 @@ export const verificationRoutes: FastifyPluginAsyncTypebox = async (app) => {
       schema: {
         tags: ['Verification'],
         summary: 'Recent moderation activity',
-        description: 'AccountVerificationApi.listActivity.',
+        description: 'AccountVerificationApi.listActivity. Newest first.',
         security: [{ bearerAuth: [] }],
         querystring: ListActivityQuery,
-        response: { 200: Type.Array(ModerationActivity), ...errorResponses(401, 403, 501) },
+        response: { 200: Type.Array(ModerationActivity), ...errorResponses(401, 403) },
       },
     },
-    async () => {
-      throw notImplemented(pending);
-    },
+    async (request) => listModerationActivity(app.db, request.query.limit ?? 50),
   );
 };

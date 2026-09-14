@@ -140,24 +140,24 @@ asking questions in chat.
 
 ---
 
-## Step 5 — Verification requests `[ ]`
+## Step 5 — Verification requests `[x]` (done 2026-09-14)
 
 **Goal.** The mobile → console → mobile round trip: a mechanic files, a
 moderator decides, the mobile app sees the verdict live.
 
 **Tasks.**
-- [ ] `services/verification.service.ts`: submit (one pending request per
+- [x] `services/verification.service.ts`: submit (one pending request per
       user, generate `user_number`), list with filters, find with ownership
       rule (mechanic sees own; console sees all), decide with permission per
       action (`canApprove`/`canReject`/`canEscalate`; admins bypass), write
       `moderator_activity` and `admin_audit_log`, publish
       `verification_request.updated` to the owner and the console roles.
-- [ ] Map rows to `AccountVerificationRequest` exactly as the Dart DTO reads
+- [x] Map rows to `AccountVerificationRequest` exactly as the Dart DTO reads
       them (`documentNames`, `documents`, `reviewerName`, `escalated`).
-- [ ] `listActivity` from `moderator_activity`.
-- [ ] Integration tests: submit, list filters, ownership 404, each decision,
+- [x] `listActivity` from `moderator_activity`.
+- [x] Integration tests: submit, list filters, ownership 404, each decision,
       permission denial, escalation visible to admin, event delivered.
-- [ ] Replace the 501 handlers in `routes/v1/verification.ts`.
+- [x] Replace the 501 handlers in `routes/v1/verification.ts`.
 
 **Done when.** Tests cover the whole round trip and the routes are live.
 Documents themselves arrive in Step 7.
@@ -165,6 +165,14 @@ Documents themselves arrive in Step 7.
 **Model.** Top-tier model (permissions and audit logic).
 
 ---
+
+**Result (2026-09-14).** Migration 005 adds `name`, `email`, `document_names`
+and a per-request number to `account_requests`, plus a partial unique index for
+one pending request per user. `services/verification.service.ts` and the live
+routes replace the 501 handlers; 9 integration tests cover submit, the pending
+conflict, console-only listing, filters, ownership 404, approve/reject/escalate,
+permission denial, the actor-is-the-token-holder rule, and the delivered event.
+Documents themselves still wait for Step 7.
 
 ## Step 6 — Moderator directory and audit log `[ ]`
 

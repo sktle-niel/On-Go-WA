@@ -29,9 +29,6 @@ test('unimplemented console routes answer 501 with the envelope, behind their gu
   const stub = await ctx.app.inject({ method: 'GET', url: '/api/v1/moderators', headers: bearer(adminToken) });
   assert.equal(stub.statusCode, 501);
   assert.equal(stub.json().error.code, 'not_implemented');
-
-  const queue = await ctx.app.inject({ method: 'GET', url: '/api/v1/verification-requests', headers: bearer(adminToken) });
-  assert.equal(queue.statusCode, 501);
 });
 
 test('the appearance is public and empty until published', async () => {
