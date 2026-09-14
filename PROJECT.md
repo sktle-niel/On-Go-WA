@@ -185,19 +185,29 @@ In background — (Step 7) are all live. Nothing answers `501` anymore.
 
 ### Deployed (2026-09-14, staging)
 
-- Cloud Run service `ongo-api` in asia-southeast1, revision `ongo-api-00001`,
-  built by Cloud Build from this folder:
+- Cloud Run service `ongo-api` in asia-southeast1:
   `https://ongo-api-618821603306.asia-southeast1.run.app` (`/docs` on).
+  First deploy was revision `ongo-api-00001` (Steps 1–3). Steps 5–8 and the
+  security hardening were merged to `main` (`ee68043`, CI green) and deployed
+  as revision `ongo-api-00004` on 2026-09-14.
 - Neon project `blue-grass-28212582` (AWS ap-southeast-1, branch `production`,
-  database `neondb`); migrations 001–004 applied, first admin seeded.
+  database `neondb`); migrations 001–**005** applied, first admin seeded.
 - Secret Manager: `ongo-jwt-signing-key`, `ongo-password-pepper`,
   `ongo-pg-password`, read by the compute service account.
-- Cloud Run Job `ongo-migrate` (same image, `node dist/scripts/migrate.js`)
-  executed once: nothing new.
-- Verified from the laptop: `/health/ready` → `database: up`, `/docs/json`
-  23 paths, points-policy and appearance GET, 404 envelope, admin sign-in
-  (console surface: cookie set, no refresh token in body), `/me`, WebSocket
-  auth → `ready`.
+- Env set on the service: `UPLOAD_DIR=/tmp/uploads` (Cloud Run `/app` is not
+  writable by the app user, and `/tmp` is ephemeral), `PUBLIC_BASE_URL` = the
+  service URL so document and background links are absolute. `DELIVERY_DRIVER`
+  is still `log` (no SMTP configured), so reset codes are logged, not emailed.
+- `ongo-migrate` Cloud Run Job image updated to the latest so future migrations
+  run in-cluster. `/docs/json` now lists 24 paths.
+- Verified live 2026-09-14: `/health/ready` → `database: up`; admin sign-in;
+  GET `/moderators`, `/verification-requests`, `/audit-log`, `/platform/appearance`
+  all 200; and a full appearance upload round trip (PUT → served bytes match →
+  DELETE) confirming storage writes work on Cloud Run.
+
+**Ephemeral storage caveat:** uploaded documents and the background live on the
+container's `/tmp`, lost on every revision/restart/scale. Fine for a demo; a
+real deployment needs a GCS driver (see `deploy/CLOUD_RUN.md` §9).
 
 ### Repository hygiene (2026-09-14)
 
