@@ -3,7 +3,7 @@ import { displayNameOf } from '../auth/users.js';
 import type { Database, Queryable } from '../db/database.js';
 import type { EventBus } from '../events/bus.js';
 import { recordSecurityEvent, SecurityEvent } from '../logging/audit.js';
-import { badRequest, conflict, forbidden, isUniqueViolation, notFound } from '../utils/errors.js';
+import { AppError, badRequest, conflict, forbidden, isUniqueViolation, notFound } from '../utils/errors.js';
 
 /**
  * The jobs domain — slice 1: service requests (booking).
@@ -53,6 +53,10 @@ export interface ServiceRequestDto {
   createdAt: string;
   matchedAt: string | null;
   completedAt: string | null;
+  /** When an Urgent or Emergency job must be under way by; null for Normal or an unmatched job. */
+  deadlineAt: string | null;
+  /** When the matched mechanic promised to arrive: matchedAt plus the accepted quote's ETA. */
+  expectedArrivalAt: string | null;
   mechanicId: string | null;
   mechanicName: string | null;
   navigating: boolean;
@@ -97,6 +101,8 @@ interface RequestRow {
   created_at: Date;
   accepted_at: Date | null;
   completed_at: Date | null;
+  deadline_at: Date | null;
+  expected_arrival_at: Date | null;
   navigating: boolean;
   navigating_at: Date | null;
   en_route: boolean;
@@ -132,7 +138,13 @@ interface RequestRow {
 const SELECT_REQUEST = `
   SELECT sr.id, sr.client_id, sr.mechanic_id, sr.status::text AS status, sr.urgency::text AS urgency,
          sr.issue, sr.description, sr.location, sr.surcharge, sr.latitude, sr.longitude,
-         sr.created_at, sr.accepted_at, sr.completed_at,
+         sr.created_at, sr.accepted_at, sr.completed_at, sr.deadline_at,
+         CASE WHEN sr.status = 'matched'::request_status THEN (
+           SELECT sr.accepted_at + make_interval(mins => q.eta_minutes)
+             FROM quotes q
+            WHERE q.request_id = sr.id AND q.mechanic_id = sr.mechanic_id AND q.accepted
+            LIMIT 1
+         ) END AS expected_arrival_at,
          sr.navigating, sr.navigating_at, sr.en_route, sr.en_route_at,
          sr.arrived, sr.arrived_at, sr.work_started, sr.work_started_at,
          sr.service_completed, sr.service_completed_at,
@@ -168,6 +180,8 @@ function toDto(row: RequestRow): ServiceRequestDto {
     createdAt: row.created_at.toISOString(),
     matchedAt: iso(row.accepted_at),
     completedAt: iso(row.completed_at),
+    deadlineAt: iso(row.deadline_at),
+    expectedArrivalAt: iso(row.expected_arrival_at),
     mechanicId: row.mechanic_id,
     mechanicName: row.has_mechanic
       ? displayNameOf({ first_name: row.m_first ?? '', last_name: row.m_last ?? '', email: row.m_email ?? '' })
@@ -301,6 +315,18 @@ export async function getServiceRequest(db: Queryable, auth: AuthContext, id: st
   return toDto(row);
 }
 
+/**
+ * The client closes a request for good (the app's "Delete"): it becomes
+ * `cancelled` and stays as history.
+ *
+ *   - A pending request can always be cancelled.
+ *   - A matched one only as assertClientMayLeaveMatch allows: once the
+ *     mechanic's quoted arrival time has passed or they have arrived, and
+ *     before work starts. From there the job is finished and paid, not cancelled.
+ *
+ * The row is locked, so a cancel cannot race an accept, a status step or the
+ * expiry sweep.
+ */
 export async function cancelServiceRequest(
   db: Database,
   events: EventBus,
@@ -308,30 +334,30 @@ export async function cancelServiceRequest(
   id: string,
   reason: string | null,
 ): Promise<ServiceRequestDto> {
-  const existing = await fetchRequest(db, id);
-  if (!existing || existing.client_id !== auth.userId) throw notFound('Request not found.');
-  if (existing.status !== 'pending') {
-    // Matched jobs gain an ETA-lock rule with the acceptance slice; a decided
-    // (completed/cancelled) request cannot be cancelled again.
-    throw conflict('This request can no longer be cancelled.');
-  }
+  const previous = await db.withTransaction(async (tx) => {
+    const req = await lockRequest(tx, id);
+    if (!req || req.client_id !== auth.userId) throw notFound('Request not found.');
+    if (req.status === 'matched') await assertClientMayLeaveMatch(tx, id, req);
+    else if (req.status !== 'pending') throw conflict('This request can no longer be cancelled.');
 
-  // Guarded so a mechanic accepting at this instant (a later slice) cannot race
-  // the cancel: only a still-pending row is flipped.
-  const updated = await db.queryOne<{ id: string }>(
-    `UPDATE service_requests
-        SET status = 'cancelled'::request_status,
-            last_cancel_reason = $2, last_cancelled_by = $3, last_cancelled_at = now()
-      WHERE id = $1 AND client_id = $4 AND status = 'pending'::request_status
-      RETURNING id`,
-    [id, reason?.trim() || null, auth.displayName, auth.userId],
-  );
-  if (!updated) throw conflict('This request can no longer be cancelled.');
+    await tx.query(
+      `UPDATE service_requests
+          SET status = 'cancelled'::request_status,
+              last_cancel_reason = $2, last_cancelled_by = $3, last_cancelled_at = now()
+        WHERE id = $1`,
+      [id, reason?.trim() || null, auth.displayName],
+    );
+    return req.status;
+  });
 
   const row = await fetchRequest(db, id);
   if (!row) throw new Error('request vanished after cancel');
   const dto = toDto(row);
-  await events.publish({ name: SERVICE_REQUEST_UPDATED, data: dto, audience: { roles: MECHANIC_AUDIENCE, userIds: [auth.userId] } });
+  // A pending request was in the open pool, so mechanics hear it is gone; a
+  // matched one concerns only its client and mechanic.
+  const audience =
+    previous === 'pending' ? { roles: MECHANIC_AUDIENCE, userIds: [auth.userId] } : { userIds: parties(dto) };
+  await events.publish({ name: SERVICE_REQUEST_UPDATED, data: dto, audience });
   return dto;
 }
 
@@ -567,12 +593,15 @@ export async function acceptQuote(
   quoteId: string,
 ): Promise<ServiceRequestDto> {
   await db.withTransaction(async (tx) => {
-    const req = await tx.queryOne<{ client_id: string; status: RequestStatusName }>(
-      `SELECT client_id, status::text AS status FROM service_requests WHERE id = $1 FOR UPDATE`,
+    const req = await tx.queryOne<{ client_id: string; status: RequestStatusName; urgency: UrgencyName }>(
+      `SELECT client_id, status::text AS status, urgency::text AS urgency FROM service_requests WHERE id = $1 FOR UPDATE`,
       [requestId],
     );
     if (!req || req.client_id !== auth.userId) throw notFound('Request not found.');
     if (req.status !== 'pending') throw conflict('This request has already been matched or closed.');
+    // An Emergency is taken by a mechanic directly; its only "quote" is that
+    // mechanic's accept record, which is never the client's to accept.
+    if (req.urgency === 'Emergency') throw conflict('An Emergency is accepted by a mechanic, not by the client.');
 
     const q = await tx.queryOne<{ id: string; mechanic_id: string; withdrawn_at: Date | null; rejected_at: Date | null }>(
       `SELECT id, mechanic_id, withdrawn_at, rejected_at FROM quotes WHERE id = $1 AND request_id = $2 FOR UPDATE`,
@@ -580,10 +609,16 @@ export async function acceptQuote(
     );
     if (!q || q.withdrawn_at || q.rejected_at) throw notFound('That quote is not available to accept.');
 
+    // Matching starts the completion clock and clears why a previous match
+    // came apart.
     await tx.query(
-      `UPDATE service_requests SET status = 'matched'::request_status, mechanic_id = $2, accepted_at = now()
+      `UPDATE service_requests
+          SET status = 'matched'::request_status, mechanic_id = $2, accepted_at = now(),
+              deadline_at = now() + make_interval(mins => $3::int),
+              expired_at = NULL, expired_by_mechanic = NULL,
+              last_cancel_reason = NULL, last_cancelled_by = NULL, last_cancelled_at = NULL
         WHERE id = $1 AND status = 'pending'::request_status`,
-      [requestId, q.mechanic_id],
+      [requestId, q.mechanic_id, WINDOW_MINUTES[req.urgency] ?? null],
     );
     await tx.query(`UPDATE quotes SET accepted = (id = $2) WHERE request_id = $1`, [requestId, quoteId]);
   });
@@ -636,9 +671,13 @@ export async function acceptEmergency(
       if (active) throw conflict('You already have an active emergency job.');
 
       await tx.query(
-        `UPDATE service_requests SET status = 'matched'::request_status, mechanic_id = $2, accepted_at = now()
+        `UPDATE service_requests
+            SET status = 'matched'::request_status, mechanic_id = $2, accepted_at = now(),
+                deadline_at = now() + make_interval(mins => $3::int),
+                expired_at = NULL, expired_by_mechanic = NULL,
+                last_cancel_reason = NULL, last_cancelled_by = NULL, last_cancelled_at = NULL
           WHERE id = $1 AND status = 'pending'::request_status`,
-        [requestId, auth.userId],
+        [requestId, auth.userId, windowMinutes],
       );
       // The emergency accept record: a quote marked accepted, price 0 (agreed
       // in person later via the payment slice).
@@ -916,4 +955,214 @@ export async function payForJob(
     });
   }
   return dto;
+}
+
+// ─── Slice 6: cancel and expiry (a match comes apart) ───────────────────────
+
+const EXPIRED_REASON = 'Did not complete the job within the allowed time.';
+
+interface LockedRequest {
+  client_id: string;
+  mechanic_id: string | null;
+  status: RequestStatusName;
+  urgency: UrgencyName;
+  navigating: boolean;
+  en_route: boolean;
+  arrived: boolean;
+  work_started: boolean;
+}
+
+function lockRequest(tx: Queryable, id: string): Promise<LockedRequest | null> {
+  return tx.queryOne<LockedRequest>(
+    `SELECT client_id, mechanic_id, status::text AS status, urgency::text AS urgency,
+            navigating, en_route, arrived, work_started
+       FROM service_requests WHERE id = $1 FOR UPDATE`,
+    [id],
+  );
+}
+
+/**
+ * The ETA lock, and the line after which a job is finished rather than
+ * cancelled. On a matched job the client may let the mechanic go only once the
+ * arrival time they quoted has passed, or they have arrived, and only before
+ * work starts. Throws on refusal and writes nothing.
+ */
+async function assertClientMayLeaveMatch(tx: Queryable, id: string, req: LockedRequest): Promise<void> {
+  if (req.work_started) throw conflict('Work has started on this job, so it can no longer be cancelled.');
+  if (req.arrived) return;
+  const eta = await tx.queryOne<{ due: Date; locked: boolean }>(
+    `SELECT sr.accepted_at + make_interval(mins => q.eta_minutes) AS due,
+            sr.accepted_at + make_interval(mins => q.eta_minutes) > now() AS locked
+       FROM service_requests sr
+       JOIN quotes q ON q.request_id = sr.id AND q.mechanic_id = sr.mechanic_id AND q.accepted
+      WHERE sr.id = $1`,
+    [id],
+  );
+  if (eta?.locked === true) {
+    throw new AppError('conflict', 'Your mechanic is still within the arrival time they promised. You can cancel once it passes.', {
+      details: { cancellableAt: eta.due.toISOString() },
+    });
+  }
+}
+
+/**
+ * Puts a matched job back in the open pool: the mechanic is released, every
+ * progress step and an Emergency's agreed amount are cleared, and no quote is
+ * accepted any more. `withdrawMechanicQuote` also takes the released mechanic's
+ * own quote off the table: an Emergency accept record, or a mechanic who backed
+ * out. The stamps say why, for the client's Jobs screen.
+ */
+async function returnToPool(
+  tx: Queryable,
+  id: string,
+  mechanicId: string,
+  why: { withdrawMechanicQuote: boolean; reason: string | null; by: string | null; expired: boolean },
+): Promise<void> {
+  await tx.query(
+    `UPDATE quotes
+        SET accepted = false,
+            withdrawn_at = CASE WHEN $3::boolean AND mechanic_id = $2 THEN COALESCE(withdrawn_at, now())
+                                ELSE withdrawn_at END
+      WHERE request_id = $1`,
+    [id, mechanicId, why.withdrawMechanicQuote],
+  );
+  await tx.query(
+    `UPDATE service_requests
+        SET status = 'pending'::request_status, mechanic_id = NULL, accepted_at = NULL, deadline_at = NULL,
+            navigating = false, navigating_at = NULL, en_route = false, en_route_at = NULL,
+            arrived = false, arrived_at = NULL, work_started = false, work_started_at = NULL,
+            service_completed = false, service_completed_at = NULL,
+            agreed_amount = NULL, agreed_amount_set_at = NULL,
+            last_cancel_reason = $2, last_cancelled_by = $3,
+            last_cancelled_at = CASE WHEN $3::text IS NULL THEN NULL ELSE now() END,
+            expired_at = CASE WHEN $4::boolean THEN now() ELSE NULL END,
+            expired_by_mechanic = CASE WHEN $4::boolean THEN $3::text ELSE NULL END
+      WHERE id = $1 AND status = 'matched'::request_status`,
+    [id, why.reason, why.by, why.expired],
+  );
+}
+
+/** A job back in the open pool concerns its client, the released mechanic, and every mechanic browsing the pool. */
+async function publishReturnedToPool(
+  db: Queryable,
+  events: EventBus,
+  id: string,
+  releasedMechanicId: string,
+): Promise<ServiceRequestDto> {
+  const row = await fetchRequest(db, id);
+  if (!row) throw new Error('request vanished after returning to the pool');
+  const dto = toDto(row);
+  await events.publish({
+    name: SERVICE_REQUEST_UPDATED,
+    data: dto,
+    audience: { roles: MECHANIC_AUDIENCE, userIds: [dto.clientId, releasedMechanicId] },
+  });
+  return dto;
+}
+
+/**
+ * The client puts a matched job back in the open pool (the app's "Revert to
+ * Pending"), under the same ETA lock as cancelling. The mechanic is released and
+ * their quote stays on the table, for the client to accept again or reject;
+ * an Emergency's accept record is withdrawn instead.
+ */
+export async function reopenServiceRequest(
+  db: Database,
+  events: EventBus,
+  auth: AuthContext,
+  id: string,
+): Promise<ServiceRequestDto> {
+  const released = await db.withTransaction(async (tx) => {
+    const req = await lockRequest(tx, id);
+    if (!req || req.client_id !== auth.userId) throw notFound('Request not found.');
+    if (req.status !== 'matched' || req.mechanic_id === null) {
+      throw conflict('Only a matched job can be put back in the open pool.');
+    }
+    await assertClientMayLeaveMatch(tx, id, req);
+    await returnToPool(tx, id, req.mechanic_id, {
+      withdrawMechanicQuote: req.urgency === 'Emergency',
+      reason: null,
+      by: null,
+      expired: false,
+    });
+    return req.mechanic_id;
+  });
+  return publishReturnedToPool(db, events, id, released);
+}
+
+/**
+ * The assigned mechanic backs out of a matched job, with a reason the client is
+ * shown. Only before setting off, meaning no progress step taken, and never on
+ * an Emergency, which the mechanic claimed first-come. The job returns to the
+ * open pool and the mechanic's quote is withdrawn: the client is not offered the
+ * same mechanic again unless they quote afresh.
+ */
+export async function mechanicCancelJob(
+  db: Database,
+  events: EventBus,
+  auth: AuthContext,
+  id: string,
+  reason: string,
+): Promise<ServiceRequestDto> {
+  const why = reason.trim();
+  if (why.length === 0) throw badRequest('Tell the client why you are cancelling.');
+
+  await db.withTransaction(async (tx) => {
+    const req = await lockRequest(tx, id);
+    if (!req || req.mechanic_id !== auth.userId) throw notFound('Request not found.');
+    if (req.status !== 'matched') throw conflict('This job is not in progress.');
+    if (req.urgency === 'Emergency') throw conflict('An accepted Emergency cannot be cancelled.');
+    if (req.navigating || req.en_route || req.arrived || req.work_started) {
+      throw conflict('You are already on your way to this job, so it can no longer be cancelled.');
+    }
+    await returnToPool(tx, id, auth.userId, { withdrawMechanicQuote: true, reason: why, by: auth.displayName, expired: false });
+  });
+  return publishReturnedToPool(db, events, id, auth.userId);
+}
+
+/**
+ * The completion clock. An Urgent or Emergency job still not under way at its
+ * deadline goes back to the open pool, stamped with who let it lapse, as the
+ * mobile app's sweep did. Normal jobs have no deadline and never expire, and
+ * once work starts the clock stops for good.
+ *
+ * Safe to run as often as needed, from any number of instances: the due rows
+ * are locked in id order and re-checked under the lock, so each job expires
+ * once. Every jobs route runs it first and bootstrap.ts runs it on a timer; it
+ * costs one indexed read when nothing is due. Returns how many jobs expired.
+ */
+export async function expireOverdueJobs(db: Database, events: EventBus): Promise<number> {
+  const due = await db.queryOne<{ due: boolean }>(
+    `SELECT EXISTS (
+       SELECT 1 FROM service_requests
+        WHERE status = 'matched'::request_status AND work_started = false AND deadline_at <= now()
+     ) AS due`,
+  );
+  if (due?.due !== true) return 0;
+
+  const expired = await db.withTransaction(async (tx) => {
+    const rows = await tx.query<{ id: string; mechanic_id: string; urgency: UrgencyName; m_first: string; m_last: string; m_email: string }>(
+      `SELECT sr.id, sr.mechanic_id, sr.urgency::text AS urgency,
+              m.first_name AS m_first, m.last_name AS m_last, m.email AS m_email
+         FROM service_requests sr
+         JOIN users m ON m.id = sr.mechanic_id
+        WHERE sr.status = 'matched'::request_status AND sr.work_started = false AND sr.deadline_at <= now()
+        ORDER BY sr.id
+          FOR UPDATE OF sr`,
+    );
+    for (const row of rows) {
+      await returnToPool(tx, row.id, row.mechanic_id, {
+        withdrawMechanicQuote: row.urgency === 'Emergency',
+        reason: EXPIRED_REASON,
+        by: displayNameOf({ first_name: row.m_first, last_name: row.m_last, email: row.m_email }),
+        expired: true,
+      });
+    }
+    return rows;
+  });
+
+  for (const row of expired) {
+    await publishReturnedToPool(db, events, row.id, row.mechanic_id);
+  }
+  return expired.length;
 }

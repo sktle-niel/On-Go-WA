@@ -80,6 +80,7 @@ migrations/            forward-only SQL, one transaction per file, recorded in s
   008_accept.sql                  one-active-emergency-per-mechanic partial unique index
   009_job_progress.sql            navigating/en_route/arrived/work_started/service_completed + timestamps
   010_payments_points.sql         agreed amount, server-settled payments, points_ledger; revenue_ledger retired
+  011_cancel_expiry.sql           deadline backfill + the index the expiry sweep reads
 scripts/               migrate, seed-admin, gen-secrets, export-openapi
 src/
   index.ts             entry: loads remote secrets, then imports bootstrap
@@ -113,7 +114,7 @@ test/
   helpers/             env, PGlite database, app factory, createUser/signInAs
   unit/                config, tokens, errors
   integration/         migrations, health, auth, points, revenue, stubs, events, verification,
-                       moderators, storage, delivery, jobs, quotes, accept, status, payments
+                       moderators, storage, delivery, jobs, quotes, accept, status, payments, cancel
 Dockerfile             multi-stage, non-root, healthcheck; CMD node dist/src/index.js
 docker-compose.yml     postgres (default), redis (profile), api (profile full)
 .env.example           every setting, with comments
@@ -169,7 +170,7 @@ deploy/CLOUD_RUN.md    step-by-step trial deployment: Cloud Run + Neon + Secret 
   `listAuditLog` reads that one stream, so it already includes Step 5 queue
   decisions. Mutations publish `moderator.updated`. Note: the display `role`
   label is always "Moderator" (no column to persist a custom label).
-- Jobs domain (Step 10, in progress — migrations 006–010, not in on_go_shared yet):
+- Jobs domain (Step 10, in progress — migrations 006–011, not in on_go_shared yet):
   slice 1 booking (`/service-requests`, one active request per client), slice 2
   quotes (`MechanicQuote`, ETA cap, one live quote per mechanic, withdraw/reject),
   slice 3 accept (the atomic claim: client-accept a quote and mechanic-accept an
@@ -179,9 +180,14 @@ deploy/CLOUD_RUN.md    step-by-step trial deployment: Cloud Run + Neon + Secret 
   points (the client pays a finished job and it closes; the server settles the
   quote price or an Emergency's agreed amount, the priority fee, optionally paid
   with points, and points for both sides into an append-only `points_ledger`;
-  `/points/wallet` and `/points/convert`). Events `service_request.created`/
-  `.updated`, `quote.submitted`/`.updated`, `payment.completed`. Remaining
-  slices: cancel + expiry sweep, locations, reviews + leaderboard, chat.
+  `/points/wallet` and `/points/convert`), slice 6 cancel and expiry (accept
+  stamps a 12h/3d completion deadline; the client cancels or reopens a matched
+  job once the quoted ETA passes or the mechanic arrives, never after work
+  starts; the mechanic cancels before any progress step; an overdue job not
+  under way returns to the pool, swept before every jobs route and on a
+  timer). Events `service_request.created`/`.updated`, `quote.submitted`/
+  `.updated`, `payment.completed`. Remaining slices: locations, reviews +
+  leaderboard, chat.
 - Open-pool fix (2026-09-15): `GET /service-requests?scope=open` answers 403 to
   clients and records `authz.denied`; mechanics and console roles still read it.
   Before, any signed-in client could list every pending request with the other
@@ -189,7 +195,7 @@ deploy/CLOUD_RUN.md    step-by-step trial deployment: Cloud Run + Neon + Secret 
 - Security plugins, docs, health routes.
 - Scripts: migrate, seed-admin, gen-secrets, export-openapi.
 - Dockerfile, docker-compose.yml, .env.example.
-- Test suite (19 files, 116 tests) on PGlite.
+- Test suite (20 files, 125 tests) on PGlite.
 
 ### Implemented since the last hosting snapshot
 
@@ -200,8 +206,8 @@ In background — (Step 7) are all live. Nothing answers `501` anymore.
 ### Verified (2026-09-11)
 
 - `npm run typecheck` clean (TypeScript 7.0.2).
-- `npm test` clean: 116 tests on PGlite 0.5.8 (PostgreSQL 18.3 in WebAssembly),
-  re-verified 2026-09-15. Migrations 001–010 apply there unchanged, including
+- `npm test` clean: 125 tests on PGlite 0.5.8 (PostgreSQL 18.3 in WebAssembly),
+  re-verified 2026-09-15. Migrations 001–011 apply there unchanged, including
   `CREATE ROLE`, partial unique indexes, `AT TIME ZONE 'Asia/Manila'` and bytea
   parameters.
 - Schema files import `Type` from `@fastify/type-provider-typebox`, which
@@ -254,15 +260,16 @@ real deployment needs a GCS driver (see `deploy/CLOUD_RUN.md` §9).
 
 ### Known issues (confirmed 2026-09-15, owned by later slices)
 
-- A matched job can neither be cancelled nor expire: `deadline_at` is never
-  written and there is no sweep. Until the cancel + expiry slice, a job whose
-  mechanic disappears holds the client's one active slot.
 - After an accept, `service_request.updated` reaches only the two parties, so
-  other mechanics' open pools go stale until they refetch.
+  other mechanics' open pools go stale until they refetch. A job returning to
+  the pool is announced to every mechanic since slice 6.
 - Staging still runs the old `POST /payments`, which books whatever fee is
-  reported, until this branch is deployed with migration 010.
-- Fixed by slice 5 (2026-09-15): the trusted revenue route, finished jobs that
-  never closed, and the Emergency accept record's placeholder price.
+  reported, until this branch is deployed with migrations 010–011.
+- The "mechanic is running late" notice is not server-side; the app derives it
+  from `expectedArrivalAt`.
+- Fixed by slices 5–6 (2026-09-15): the trusted revenue route, finished jobs
+  that never closed, the Emergency accept record's placeholder price, and
+  matched jobs that could neither be cancelled nor expire.
 
 ## Routes (all under `/api/v1`)
 
@@ -300,7 +307,9 @@ real deployment needs a GCS driver (see `deploy/CLOUD_RUN.md` §9).
 | POST | /service-requests | (addition) book a request | client | live |
 | GET | /service-requests | (addition) list open / mine | bearer; `scope=open` mechanic or console only (client 403) | live |
 | GET | /service-requests/:id | (addition) one request | owner / mechanic / console | live |
-| POST | /service-requests/:id/cancel | (addition) cancel own pending | client | live |
+| POST | /service-requests/:id/cancel | (addition) cancel own request: pending, or matched past the ETA lock and before work | client | live |
+| POST | /service-requests/:id/reopen | (addition) put a matched job back in the pool, same lock | client (owner) | live |
+| POST | /service-requests/:id/mechanic-cancel | (addition) back out before any progress step, with a reason; not an Emergency | assigned mechanic | live |
 | POST | /service-requests/:id/quotes | (addition) send a quote | mechanic (approved) | live |
 | GET | /service-requests/:id/quotes | (addition) list quotes | owner / mechanic / console | live |
 | POST | /service-requests/:id/quotes/withdraw | (addition) withdraw own quote | mechanic | live |
@@ -339,8 +348,13 @@ real deployment needs a GCS driver (see `deploy/CLOUD_RUN.md` §9).
    from urgency; ETA is in minutes, capped to the completion window (Emergency
    12h, Urgent 3d, Normal none). Events: `service_request.created`/`.updated`,
    `quote.submitted`/`.updated`, `payment.completed` (admin). Payment and the
-   points wallet are live (slice 5). Still to come: cancel/expiry, locations,
-   reviews/leaderboard, chat.
+   points wallet are live (slice 5), and so are cancel and expiry (slice 6):
+   `/cancel` is the app's "Delete", `/reopen` its "Revert to Pending", and
+   `/mechanic-cancel` the mechanic's "Cancel Job". A refusal under the ETA lock
+   carries `error.details.cancellableAt`, and every request carries
+   `deadlineAt` and `expectedArrivalAt`, so the app's countdowns read the
+   server's clock. The app's own expiry sweep and cancel rules can go. Still to
+   come: locations, reviews/leaderboard, chat.
 9. **`LocationApi` (added to `on_go_shared` upstream on 2026-09-13) is not served
    yet:** `POST /locations`, `GET /users/:userId/location`,
    `GET /mechanics/:mechanicId/nearby-jobs?radiusKm=`. Models `GeoPoint`,

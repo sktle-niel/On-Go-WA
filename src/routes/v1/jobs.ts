@@ -1,5 +1,6 @@
 import type { FastifyPluginAsyncTypebox } from '@fastify/type-provider-typebox';
 import { Type } from '@fastify/type-provider-typebox';
+import type { preHandlerAsyncHookHandler } from 'fastify';
 import { currentAuth, requireAuth } from '../../auth/guard.js';
 import { errorResponses, IdParams, Uuid } from '../../schemas/common.js';
 import {
@@ -8,6 +9,7 @@ import {
   CancelServiceRequestBody,
   CreateServiceRequestBody,
   ListRequestsQuery,
+  MechanicCancelBody,
   MechanicQuote,
   PayBody,
   ServiceRequest,
@@ -19,11 +21,14 @@ import {
   advanceJobStatus,
   cancelServiceRequest,
   createServiceRequest,
+  expireOverdueJobs,
   getServiceRequest,
   listQuotes,
   listServiceRequests,
+  mechanicCancelJob,
   payForJob,
   rejectQuote,
+  reopenServiceRequest,
   setAgreedAmount,
   submitQuote,
   withdrawQuote,
@@ -41,10 +46,16 @@ const QuoteIdParams = Type.Object({ id: Uuid, quoteId: Uuid });
  * Acceptance, quotes, the status machine, payment and reviews are later slices.
  */
 export const jobRoutes: FastifyPluginAsyncTypebox = async (app) => {
+  // Every jobs route lets overdue jobs lapse before it runs, after the auth
+  // guard, so each call sees jobs as they stand now (see expireOverdueJobs).
+  const expireDue: preHandlerAsyncHookHandler = async () => {
+    await expireOverdueJobs(app.db, app.events);
+  };
+
   app.post(
     '/service-requests',
     {
-      preHandler: [requireAuth({ roles: ['client'] })],
+      preHandler: [requireAuth({ roles: ['client'] }), expireDue],
       schema: {
         tags: ['Jobs'],
         summary: 'Book a service request',
@@ -65,7 +76,7 @@ export const jobRoutes: FastifyPluginAsyncTypebox = async (app) => {
   app.get(
     '/service-requests',
     {
-      preHandler: [requireAuth()],
+      preHandler: [requireAuth(), expireDue],
       schema: {
         tags: ['Jobs'],
         summary: 'List service requests',
@@ -90,7 +101,7 @@ export const jobRoutes: FastifyPluginAsyncTypebox = async (app) => {
   app.get(
     '/service-requests/:id',
     {
-      preHandler: [requireAuth()],
+      preHandler: [requireAuth(), expireDue],
       schema: {
         tags: ['Jobs'],
         summary: 'One service request',
@@ -108,13 +119,15 @@ export const jobRoutes: FastifyPluginAsyncTypebox = async (app) => {
   app.post(
     '/service-requests/:id/cancel',
     {
-      preHandler: [requireAuth({ roles: ['client'] })],
+      preHandler: [requireAuth({ roles: ['client'] }), expireDue],
       schema: {
         tags: ['Jobs'],
         summary: 'Cancel a service request',
         description:
-          'Addition. The client cancels their own still-pending request. A matched job gains an ' +
-          'ETA-lock rule with the acceptance slice; a completed or already-cancelled request is 409.',
+          'Addition, the app\'s "Delete". The client closes their own request as `cancelled`: a pending ' +
+          'request always; a matched one once the mechanic\'s quoted arrival time has passed or they have ' +
+          'arrived, and before work starts (409 otherwise, with `details.cancellableAt` while the ETA lock ' +
+          'holds). A completed or already-cancelled request is 409.',
         security: [{ bearerAuth: [] }],
         params: IdParams,
         body: CancelServiceRequestBody,
@@ -125,12 +138,54 @@ export const jobRoutes: FastifyPluginAsyncTypebox = async (app) => {
       cancelServiceRequest(app.db, app.events, currentAuth(request), request.params.id, request.body.reason ?? null),
   );
 
+  app.post(
+    '/service-requests/:id/reopen',
+    {
+      preHandler: [requireAuth({ roles: ['client'] }), expireDue],
+      schema: {
+        tags: ['Jobs'],
+        summary: 'Put a matched job back in the open pool',
+        description:
+          'Addition, the app\'s "Revert to Pending". The client releases the mechanic once their quoted ' +
+          'arrival time has passed or they have arrived, and before work starts (409 otherwise, with ' +
+          '`details.cancellableAt` while the ETA lock holds). The mechanic\'s quote stays live; an ' +
+          'Emergency accept record is withdrawn. Mechanics hear the job is open again.',
+        security: [{ bearerAuth: [] }],
+        params: IdParams,
+        response: { 200: ServiceRequest, ...errorResponses(401, 403, 404, 409) },
+      },
+    },
+    async (request) => reopenServiceRequest(app.db, app.events, currentAuth(request), request.params.id),
+  );
+
+  app.post(
+    '/service-requests/:id/mechanic-cancel',
+    {
+      preHandler: [requireAuth({ roles: ['mechanic'] }), expireDue],
+      schema: {
+        tags: ['Jobs'],
+        summary: 'Cancel a job you accepted',
+        description:
+          'Addition. The assigned mechanic backs out of a matched Normal or Urgent job before taking any ' +
+          'progress step, with a reason the client is shown. The job returns to the open pool and the ' +
+          'mechanic\'s quote is withdrawn; they may quote again. An Emergency, or a job already under way, ' +
+          'answers 409.',
+        security: [{ bearerAuth: [] }],
+        params: IdParams,
+        body: MechanicCancelBody,
+        response: { 200: ServiceRequest, ...errorResponses(400, 401, 403, 404, 409) },
+      },
+    },
+    async (request) =>
+      mechanicCancelJob(app.db, app.events, currentAuth(request), request.params.id, request.body.reason),
+  );
+
   // ── Quotes (Normal / Urgent requests; Emergency is accepted directly) ──────
 
   app.post(
     '/service-requests/:id/quotes',
     {
-      preHandler: [requireAuth({ roles: ['mechanic'] })],
+      preHandler: [requireAuth({ roles: ['mechanic'] }), expireDue],
       schema: {
         tags: ['Jobs'],
         summary: 'Send a quote',
@@ -153,7 +208,7 @@ export const jobRoutes: FastifyPluginAsyncTypebox = async (app) => {
   app.get(
     '/service-requests/:id/quotes',
     {
-      preHandler: [requireAuth()],
+      preHandler: [requireAuth(), expireDue],
       schema: {
         tags: ['Jobs'],
         summary: 'List quotes on a request',
@@ -170,7 +225,7 @@ export const jobRoutes: FastifyPluginAsyncTypebox = async (app) => {
   app.post(
     '/service-requests/:id/quotes/withdraw',
     {
-      preHandler: [requireAuth({ roles: ['mechanic'] })],
+      preHandler: [requireAuth({ roles: ['mechanic'] }), expireDue],
       schema: {
         tags: ['Jobs'],
         summary: 'Withdraw your quote',
@@ -186,7 +241,7 @@ export const jobRoutes: FastifyPluginAsyncTypebox = async (app) => {
   app.post(
     '/service-requests/:id/quotes/:quoteId/reject',
     {
-      preHandler: [requireAuth({ roles: ['client'] })],
+      preHandler: [requireAuth({ roles: ['client'] }), expireDue],
       schema: {
         tags: ['Jobs'],
         summary: 'Reject a quote',
@@ -204,7 +259,7 @@ export const jobRoutes: FastifyPluginAsyncTypebox = async (app) => {
   app.post(
     '/service-requests/:id/quotes/:quoteId/accept',
     {
-      preHandler: [requireAuth({ roles: ['client'] })],
+      preHandler: [requireAuth({ roles: ['client'] }), expireDue],
       schema: {
         tags: ['Jobs'],
         summary: 'Accept a quote',
@@ -222,7 +277,7 @@ export const jobRoutes: FastifyPluginAsyncTypebox = async (app) => {
   app.post(
     '/service-requests/:id/accept',
     {
-      preHandler: [requireAuth({ roles: ['mechanic'] })],
+      preHandler: [requireAuth({ roles: ['mechanic'] }), expireDue],
       schema: {
         tags: ['Jobs'],
         summary: 'Accept an emergency',
@@ -252,7 +307,7 @@ export const jobRoutes: FastifyPluginAsyncTypebox = async (app) => {
     app.post(
       `/service-requests/:id/${path}`,
       {
-        preHandler: [requireAuth({ roles: ['mechanic'] })],
+        preHandler: [requireAuth({ roles: ['mechanic'] }), expireDue],
         schema: {
           tags: ['Jobs'],
           summary,
@@ -271,7 +326,7 @@ export const jobRoutes: FastifyPluginAsyncTypebox = async (app) => {
   app.put(
     '/service-requests/:id/agreed-amount',
     {
-      preHandler: [requireAuth({ roles: ['mechanic'] })],
+      preHandler: [requireAuth({ roles: ['mechanic'] }), expireDue],
       schema: {
         tags: ['Jobs'],
         summary: 'Set the agreed amount on an emergency',
@@ -292,7 +347,7 @@ export const jobRoutes: FastifyPluginAsyncTypebox = async (app) => {
   app.post(
     '/service-requests/:id/pay',
     {
-      preHandler: [requireAuth({ roles: ['client'] })],
+      preHandler: [requireAuth({ roles: ['client'] }), expireDue],
       schema: {
         tags: ['Jobs'],
         summary: 'Pay for a finished job',

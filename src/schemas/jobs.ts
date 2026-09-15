@@ -33,6 +33,10 @@ export const ServiceRequest = Type.Object({
   createdAt: DateTime,
   matchedAt: Nullable(DateTime),
   completedAt: Nullable(DateTime),
+  /** When an Urgent or Emergency job must be under way by (12h / 3d from the match); null for Normal. */
+  deadlineAt: Nullable(DateTime),
+  /** matchedAt plus the accepted quote's ETA; the client cannot cancel before it unless the mechanic arrived. */
+  expectedArrivalAt: Nullable(DateTime),
   mechanicId: Nullable(Uuid),
   mechanicName: Nullable(Type.String()),
   // Progress on a matched job (slice 4).
@@ -145,6 +149,14 @@ export const PayBody = Type.Object(
     expectedAmount: Type.Optional(
       Type.Number({ minimum: 0, description: 'The mechanic amount the client saw; a different current amount is 409' }),
     ),
+  },
+  { additionalProperties: false },
+);
+
+/** The assigned mechanic backs out of a job, and tells the client why. */
+export const MechanicCancelBody = Type.Object(
+  {
+    reason: Type.String({ minLength: 1, maxLength: 1000, description: 'Shown to the client' }),
   },
   { additionalProperties: false },
 );

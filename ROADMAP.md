@@ -328,7 +328,7 @@ it lands with or right after the first slice of Step 10.
 
 ---
 
-## Step 10 — The jobs domain `[~]` (in progress; slices 1–5 done by 2026-09-15)
+## Step 10 — The jobs domain `[~]` (in progress; slices 1–6 done by 2026-09-15)
 
 **Goal.** Help requests, quotes, ETA, chat, reviews and QR payments move from
 the mobile app's memory to the server, so two devices see the same job.
@@ -348,6 +348,23 @@ the mobile app's memory to the server, so two devices see the same job.
 
 **Done when.** A client on one phone and a mechanic on another complete a job
 end to end through the API.
+
+**Slice 6 done (2026-09-15): cancel and expiry.** Migration 011 backfills
+completion deadlines and indexes the expiry sweep. Accepting a quote or an
+Emergency stamps `deadline_at` (Emergency 12h, Urgent 3d, Normal none) and
+clears old cancel and expiry stamps. The client cancels (`/cancel`, the app's
+"Delete") or reopens (`/reopen`, "Revert to Pending") a matched job once the
+mechanic's quoted arrival time has passed or they have arrived; a refusal
+carries `details.cancellableAt`. The assigned mechanic cancels a Normal or
+Urgent job with a reason (`/mechanic-cancel`). An Urgent or Emergency job not
+under way by its deadline returns to the pool, stamped with who let it lapse;
+the sweep runs before every jobs route and on a background timer
+(`JOB_EXPIRY_SWEEP_SECONDS`). Jobs back in the pool are announced to every
+mechanic. Stricter than the app, on purpose: no client cancel once work has
+started, no mechanic cancel after any progress step (the app checked only
+navigating), the cancelling mechanic's quote is withdrawn, an Emergency accept
+record is withdrawn on reopen, and the client can no longer accept an
+Emergency's accept record. 9 tests.
 
 **Slice 5 done (2026-09-15): payment and points.** Migration 010 adds the
 Emergency agreed amount, settlement columns on payments with one completed

@@ -28,12 +28,13 @@ test('applies every migration once, in order, and then nothing', async () => {
     '008_accept',
     '009_job_progress',
     '010_payments_points',
+    '011_cancel_expiry',
   ]);
   assert.deepEqual(first.skipped, []);
 
   const second = await runMigrations(db, MIGRATIONS_DIR);
   assert.deepEqual(second.applied, []);
-  assert.equal(second.skipped.length, 10);
+  assert.equal(second.skipped.length, 11);
 });
 
 test('the contract tables exist with their seed rows', async () => {
