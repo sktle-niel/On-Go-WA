@@ -85,6 +85,33 @@ test('only clients can book; mechanics browse the open pool', async () => {
   assert.ok(mine.json().every((r: { clientId: string }) => r.clientId === clientId));
 });
 
+test('the open pool is refused to clients, even one with a request in it, and the attempt is logged', async () => {
+  const openAs = (token: string) =>
+    ctx.app.inject({ method: 'GET', url: '/api/v1/service-requests?scope=open', headers: bearer(token) });
+  const clientDenials = async () =>
+    (await ctx.db.queryOne<{ n: number }>(
+      `SELECT count(*)::int AS n FROM security_events WHERE event = 'authz.denied' AND actor_role = 'client'::user_role`,
+    ))?.n ?? 0;
+  const deniedBefore = await clientDenials();
+
+  // Another client must not learn who needs help, or where.
+  const stranger = await openAs(otherClientToken);
+  assert.equal(stranger.statusCode, 403);
+  assert.equal(stranger.json().error.code, 'forbidden');
+  assert.ok(!stranger.body.includes('Cita Client'), 'the refusal carries no request data');
+
+  // Owning a pending request does not open the pool either.
+  assert.equal((await openAs(clientToken)).statusCode, 403);
+
+  assert.equal((await clientDenials()) - deniedBefore, 2, 'each refusal records authz.denied');
+
+  // The console still reads the pool.
+  const asAdmin = await openAs(adminToken);
+  assert.equal(asAdmin.statusCode, 200);
+  assert.ok(asAdmin.json().length >= 1);
+  assert.ok(asAdmin.json().every((r: { status: string }) => r.status === 'pending'));
+});
+
 test('ownership on reading one request', async () => {
   const id = (await ctx.app.inject({ method: 'GET', url: '/api/v1/service-requests?scope=mine', headers: bearer(clientToken) })).json()[0].id;
 

@@ -1,6 +1,6 @@
 # On Go Backend — Project Memory
 
-Last updated: 2026-09-14. Keep this file honest: it is what the next session
+Last updated: 2026-09-15. Keep this file honest: it is what the next session
 plans against. Update the **Status** section whenever something is finished.
 
 ## What this is
@@ -176,10 +176,14 @@ deploy/CLOUD_RUN.md    step-by-step trial deployment: Cloud Run + Neon + Secret 
   work_started → service_completed, idempotent, gated). Events
   `service_request.created`/`.updated`, `quote.submitted`/`.updated`. Remaining
   slices: payments + points, cancel + expiry sweep, reviews + leaderboard, chat.
+- Open-pool fix (2026-09-15): `GET /service-requests?scope=open` answers 403 to
+  clients and records `authz.denied`; mechanics and console roles still read it.
+  Before, any signed-in client could list every pending request with the other
+  client's name, address and coordinates (confirmed with a PGlite probe).
 - Security plugins, docs, health routes.
 - Scripts: migrate, seed-admin, gen-secrets, export-openapi.
 - Dockerfile, docker-compose.yml, .env.example.
-- Test suite (18 files, 107 tests) on PGlite.
+- Test suite (18 files, 108 tests) on PGlite.
 
 ### Implemented since the last hosting snapshot
 
@@ -190,8 +194,8 @@ In background — (Step 7) are all live. Nothing answers `501` anymore.
 ### Verified (2026-09-11)
 
 - `npm run typecheck` clean (TypeScript 7.0.2).
-- `npm test` clean: 107 tests on PGlite 0.5.8 (PostgreSQL 18.3 in WebAssembly),
-  re-verified 2026-09-14. Migrations 001–009 apply there unchanged, including
+- `npm test` clean: 108 tests on PGlite 0.5.8 (PostgreSQL 18.3 in WebAssembly),
+  re-verified 2026-09-15. Migrations 001–009 apply there unchanged, including
   `CREATE ROLE`, partial unique indexes, `AT TIME ZONE 'Asia/Manila'` and bytea
   parameters.
 - Schema files import `Type` from `@fastify/type-provider-typebox`, which
@@ -242,6 +246,22 @@ real deployment needs a GCS driver (see `deploy/CLOUD_RUN.md` §9).
 - The Redis code path (no Redis locally).
 - README.md is not written (Step 4).
 
+### Known issues (confirmed 2026-09-15, owned by later slices)
+
+- `POST /payments` trusts the phone: any client or mechanic can book any
+  platform fee against any request id, and it shows in the revenue summary.
+  The payments slice replaces it with a fee computed from the request's
+  surcharge. Staging holds demo data only until then.
+- A finished job stays `matched` (there is no payment step yet), and the
+  one-active-request index then blocks that client from booking again. The
+  payments slice closes jobs.
+- A matched job can neither be cancelled nor expire: `deadline_at` is never
+  written and there is no sweep. The cancel + expiry slice adds both.
+- After an accept, `service_request.updated` reaches only the two parties, so
+  other mechanics' open pools go stale until they refetch.
+- The emergency accept record stores price 0; payments needs a separate agreed
+  amount (the app keeps `agreedPaymentAmount` for this).
+
 ## Routes (all under `/api/v1`)
 
 | Method | Path | Contract method | Guard | State |
@@ -276,7 +296,7 @@ real deployment needs a GCS driver (see `deploy/CLOUD_RUN.md` §9).
 | GET | /users/:userId/location | LocationApi.fetchLastKnown | owner, console | not registered (Step 10a) |
 | GET | /mechanics/:mechanicId/nearby-jobs | LocationApi.findNearbyJobIds | mechanic (self), console | not registered (Step 10a) |
 | POST | /service-requests | (addition) book a request | client | live |
-| GET | /service-requests | (addition) list open / mine | bearer | live |
+| GET | /service-requests | (addition) list open / mine | bearer; `scope=open` mechanic or console only (client 403) | live |
 | GET | /service-requests/:id | (addition) one request | owner / mechanic / console | live |
 | POST | /service-requests/:id/cancel | (addition) cancel own pending | client | live |
 | POST | /service-requests/:id/quotes | (addition) send a quote | mechanic (approved) | live |
@@ -307,7 +327,8 @@ real deployment needs a GCS driver (see `deploy/CLOUD_RUN.md` §9).
    `on_go_shared` yet — add it with the front-end dev.** Live so far: booking
    (`ServiceRequest`), quotes (`MechanicQuote`), accept (client-accept + emergency
    first-come), and the status machine. Routes are under `/service-requests` (see
-   the Routes table). Wire notes: `urgency` uses the capitalized
+   the Routes table); `?scope=open` is for mechanics and console roles only and
+   answers 403 to a client. Wire notes: `urgency` uses the capitalized
    `Normal|Urgent|Emergency`; the surcharge (priority fee 0/50/100) is server-set
    from urgency; ETA is in minutes, capped to the completion window (Emergency
    12h, Urgent 3d, Normal none). Events: `service_request.created`/`.updated`,

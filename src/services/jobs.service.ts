@@ -2,6 +2,7 @@ import type { AuthContext } from '../auth/guard.js';
 import { displayNameOf } from '../auth/users.js';
 import type { Database, Queryable } from '../db/database.js';
 import type { EventBus } from '../events/bus.js';
+import { recordSecurityEvent, SecurityEvent } from '../logging/audit.js';
 import { badRequest, conflict, forbidden, isUniqueViolation, notFound } from '../utils/errors.js';
 
 /**
@@ -213,9 +214,27 @@ export async function listServiceRequests(
   db: Queryable,
   auth: AuthContext,
   filters: { scope?: 'open' | 'mine'; urgency?: UrgencyName },
+  meta: { ipHash: Buffer; requestId: string },
 ): Promise<ServiceRequestDto[]> {
   const isConsole = auth.role === 'admin' || auth.role === 'moderator';
   const scope = filters.scope ?? 'mine';
+
+  // The open pool is every client's pending job, with that client's name,
+  // address and coordinates. It exists for mechanics choosing work and for the
+  // console; a client has no reason to browse other clients' requests, so the
+  // pool is refused to them and the attempt is logged like any role denial.
+  if (scope === 'open' && auth.role !== 'mechanic' && !isConsole) {
+    await recordSecurityEvent(db, {
+      event: SecurityEvent.AUTHZ_DENIED,
+      severity: 'warning',
+      actorId: auth.userId,
+      actorRole: auth.role,
+      ipHash: meta.ipHash,
+      requestId: meta.requestId,
+      metadata: { route: '/service-requests', scope: 'open' },
+    });
+    throw forbidden('Only mechanics can browse open requests.');
+  }
 
   let where: string;
   const params: unknown[] = [];

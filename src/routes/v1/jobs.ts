@@ -25,6 +25,7 @@ import {
   withdrawQuote,
   type StatusStep,
 } from '../../services/jobs.service.js';
+import { clientIpHash } from '../../utils/ip.js';
 
 const QuoteIdParams = Type.Object({ id: Uuid, quoteId: Uuid });
 
@@ -65,18 +66,21 @@ export const jobRoutes: FastifyPluginAsyncTypebox = async (app) => {
         tags: ['Jobs'],
         summary: 'List service requests',
         description:
-          'Addition. `?scope=open` is the pool of pending jobs (for mechanics); `?scope=mine` ' +
-          '(default) is the caller\'s own requests, or, for a mechanic, the jobs assigned to them.',
+          'Addition. `?scope=open` is the pool of pending jobs, for mechanics and console roles; a ' +
+          'client gets 403. `?scope=mine` (default) is the caller\'s own requests, or, for a mechanic, ' +
+          'the jobs assigned to them.',
         security: [{ bearerAuth: [] }],
         querystring: ListRequestsQuery,
         response: { 200: Type.Array(ServiceRequest), ...errorResponses(401, 403) },
       },
     },
     async (request) =>
-      listServiceRequests(app.db, currentAuth(request), {
-        scope: request.query.scope,
-        urgency: request.query.urgency,
-      }),
+      listServiceRequests(
+        app.db,
+        currentAuth(request),
+        { scope: request.query.scope, urgency: request.query.urgency },
+        { ipHash: clientIpHash(request), requestId: request.id },
+      ),
   );
 
   app.get(

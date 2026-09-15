@@ -349,6 +349,14 @@ the mobile app's memory to the server, so two devices see the same job.
 **Done when.** A client on one phone and a mechanic on another complete a job
 end to end through the API.
 
+**Security fix (2026-09-15): the open pool.** `GET /service-requests?scope=open`
+answered any signed-in user, so a client could list every other client's
+pending request with name, address and coordinates. It now answers 403 to
+clients and records `authz.denied`; mechanics and console roles are unchanged.
+1 test. Agreed order from here: payments + points → cancel + expiry sweep →
+locations (Step 10a) → reviews + leaderboard → chat. Whether unapproved
+mechanics should see exact coordinates is an open decision.
+
 **Slice 4 done (2026-09-14): the service-status machine.** Migration 009 adds
 the progress flags (navigating, en_route, arrived, work_started,
 service_completed) and their timestamps to service_requests. Five mechanic-only
