@@ -149,6 +149,8 @@ const schema = z
      *  accept images and PDF; the background accepts images only. */
     MAX_DOCUMENT_BYTES: z.coerce.number().int().min(1024).default(10 * 1024 * 1024),
     MAX_BACKGROUND_BYTES: z.coerce.number().int().min(1024).default(5 * 1024 * 1024),
+    /** Job chat photos: images only. */
+    MAX_CHAT_IMAGE_BYTES: z.coerce.number().int().min(1024).default(5 * 1024 * 1024),
 
     // ── Code delivery (password reset) ────────────────────────────────────────
     /** `log` prints the code (dev only); `smtp` sends real email through any

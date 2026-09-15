@@ -83,6 +83,7 @@ migrations/            forward-only SQL, one transaction per file, recorded in s
   011_cancel_expiry.sql           deadline backfill + the index the expiry sweep reads
   012_locations.sql               user_locations, ongo_great_circle_m; repairs (0,0) booking coordinates
   013_legacy_payment_reports.sql  revenue_ledger takes checked device payment reports again
+  014_chat.sql                    chat messages tied to one match; chat_reads for unread counts
 scripts/               migrate, seed-admin, gen-secrets, export-openapi,
                        check-secrets, setup-hooks, test-annotations
 src/
@@ -109,15 +110,16 @@ src/
   storage/*.ts         Storage interface, disk and gcs drivers, magic-byte validation, signed/public URL signing
   utils/uploads.ts     multipart file validation (magic bytes, size), used by the upload routes
   schemas/*.ts         TypeBox schemas mirroring on_go_shared DTOs (+ verification, moderators, jobs)
-  services/*.ts        auth, points, revenue, verification, moderators, jobs, locations, reviews (functions over Queryable)
+  services/*.ts        auth, points, revenue, verification, moderators, jobs, locations, reviews, chat (functions over Queryable)
   routes/health.ts     /health/live, /health/ready
   routes/v1/*.ts       one file per domain (auth, verification, moderators, revenue, appearance,
-                       points, events, files, jobs, locations, reviews), registered under /api/v1
+                       points, events, files, jobs, locations, reviews, chat), registered under /api/v1
 test/
   helpers/             env, PGlite database, app factory, createUser/signInAs
   unit/                config, tokens, errors
   integration/         migrations, health, auth, points, revenue, stubs, events, verification,
-                       moderators, storage, delivery, jobs, quotes, accept, status, payments, cancel, locations, reviews
+                       moderators, storage, gcs-storage, delivery, jobs, quotes, accept, status, payments, cancel,
+                       locations, reviews, chat
 Dockerfile             multi-stage, non-root, healthcheck; CMD node dist/src/index.js
 docker-compose.yml     postgres (default), redis (profile), api (profile full)
 .env.example           every setting, with comments
@@ -179,7 +181,7 @@ SECURITY.md            where secrets live, the checks, the service's security la
   `listAuditLog` reads that one stream, so it already includes Step 5 queue
   decisions. Mutations publish `moderator.updated`. Note: the display `role`
   label is always "Moderator" (no column to persist a custom label).
-- Jobs domain (Step 10, in progress — migrations 006–011, not in on_go_shared yet):
+- Jobs domain (Step 10, migrations 006–014; the Dart contract for slices 1–7 is on the front-end branch `feature/jobs-contract`):
   slice 1 booking (`/service-requests`, one active request per client), slice 2
   quotes (`MechanicQuote`, ETA cap, one live quote per mechanic, withdraw/reject),
   slice 3 accept (the atomic claim: client-accept a quote and mechanic-accept an
@@ -196,7 +198,7 @@ SECURITY.md            where secrets live, the checks, the service's security la
   under way returns to the pool, swept before every jobs route and on a
   timer). Events `service_request.created`/`.updated`, `quote.submitted`/
   `.updated`, `payment.completed`, slice 7 reviews and leaderboard (see below).
-  Remaining slice: chat.
+  Slice 8, chat, is below.
 - Locations (Step 10a, migration 012): `POST /locations` keeps each account's
   latest fix (the token holder is the subject; role must be the caller's own;
   availability for mechanics only); `GET /users/:userId/location` for the owner,
@@ -209,6 +211,14 @@ SECURITY.md            where secrets live, the checks, the service's security la
   job for them; reviews list newest first with the average and star
   distribution; any client or mechanic marks a review helpful once; and
   `GET /leaderboard` ranks approved, active mechanics by rating or review count.
+- Chat (Step 10 slice 8, migration 014, on `feature/step-10-chat`): the client
+  and the mechanic of the current match exchange text and photos, with replies
+  checked to stay in the same chat; anyone else gets 404. Sending works while the
+  job is matched, and a paid job's history stays readable. Each message records
+  the match's mechanic, so a job back in the pool starts a fresh conversation. A
+  read marker per participant gives unread counts (`GET /chat/unread` lists jobs
+  with messages waiting), photos go through the storage driver behind signed
+  links, and `chat_message.created` reaches both parties.
 - Open-pool fix (2026-09-15): `GET /service-requests?scope=open` answers 403 to
   clients and records `authz.denied`; mechanics and console roles still read it.
   Before, any signed-in client could list every pending request with the other
@@ -216,7 +226,7 @@ SECURITY.md            where secrets live, the checks, the service's security la
 - Security plugins, docs, health routes.
 - Scripts: migrate, seed-admin, gen-secrets, export-openapi.
 - Dockerfile, docker-compose.yml, .env.example.
-- Test suite (24 files, 150 tests) on PGlite.
+- Test suite (25 files, 158 tests) on PGlite.
 
 ### Where each piece runs (checked 2026-09-15)
 
@@ -234,8 +244,8 @@ was fast-forwarded to `main` on 2026-09-15. Revision 00005 was built from
 ### Verified (2026-09-11, re-checked 2026-09-15)
 
 - `npm run typecheck` clean (TypeScript 7.0.2).
-- `npm test` clean: 150 tests on PGlite 0.5.8 (PostgreSQL 18.3 in WebAssembly),
-  re-verified 2026-09-15. Migrations 001–013 apply there unchanged, including
+- `npm test` clean: 158 tests on PGlite 0.5.8 (PostgreSQL 18.3 in WebAssembly),
+  re-verified 2026-09-15. Migrations 001–014 apply there unchanged, including
   `CREATE ROLE`, partial unique indexes, `AT TIME ZONE 'Asia/Manila'` and bytea
   parameters.
 - Schema files import `Type` from `@fastify/type-provider-typebox`, which
@@ -320,11 +330,11 @@ every revision, restart or scale. The `gcs` driver and the bucket
   Signed-in traffic should be counted per account.
 - **Nothing prunes old rows.** `login_attempts`, `security_events` and spent
   `password_reset_codes` grow without limit (Step 9 retention job).
-- **App features with no server home yet.** Chat (text, an image, a reply-to,
-  unread counts), the photos attached to a job, profile edits and the profile
-  photo (`users.photo_url` has no route), the matched mechanic's phone number
-  (stored at registration, never served), and notices while the app is closed
-  (no push provider).
+- **App features with no server home yet.** The photos attached to a job,
+  profile edits and the profile photo (`users.photo_url` has no route), the
+  matched mechanic's phone number (stored at registration, never served), and
+  notices while the app is closed (no push provider). Chat has routes since
+  slice 8 but is not in `on_go_shared` yet.
 - **Stale comments.** The headers of `src/routes/v1/jobs.ts` and
   `src/services/jobs.service.ts` still describe slice 1, and `src/context.ts`
   says there is no mail provider.
@@ -409,6 +419,11 @@ every revision, restart or scale. The `gcs` driver and the bucket
 | POST | /service-requests/:id/pay | (addition) pay a finished job, which closes it | client (owner) | live |
 | GET | /points/wallet | (addition) points balance and entries, mechanic earnings | client, mechanic | live |
 | POST | /points/convert | (addition) convert points to balance | mechanic | live |
+| GET | /service-requests/:id/chat | (addition) the current match's chat, paged with `before` and `limit` | client, assigned mechanic; 404 otherwise | branch `feature/step-10-chat` |
+| POST | /service-requests/:id/chat | (addition) send a message, optionally a reply | client, assigned mechanic; while matched | branch `feature/step-10-chat` |
+| POST | /service-requests/:id/chat/images | (addition) send a photo, multipart | client, assigned mechanic; while matched | branch `feature/step-10-chat` |
+| POST | /service-requests/:id/chat/read | (addition) mark the chat read | client, assigned mechanic | branch `feature/step-10-chat` |
+| GET | /chat/unread | (addition) jobs with unread messages | client, mechanic | branch `feature/step-10-chat` |
 | WS | /events | every `watch*` | first-frame auth | live |
 | GET | /health/live, /health/ready | — | public | live |
 
@@ -421,7 +436,7 @@ every revision, restart or scale. The `gcs` driver and the bucket
    email; `ApiClient` refreshes once on `token_expired`. Its `ApiErrorCodes`
    are the server's 18 codes.
 6. `watch*` streams are one WebSocket with the protocol in
-   `src/routes/v1/events.ts`. Event names so far: `points_policy.updated`, `verification_request.updated`, `moderator.updated`, `platform_appearance.updated`, `service_request.created`, `service_request.updated`, `quote.submitted`, `quote.updated`, `payment.completed`, `review.submitted`.
+   `src/routes/v1/events.ts`. Event names so far: `points_policy.updated`, `verification_request.updated`, `moderator.updated`, `platform_appearance.updated`, `service_request.created`, `service_request.updated`, `quote.submitted`, `quote.updated`, `payment.completed`, `review.submitted`, `chat_message.created`.
 7. `ModerationDecision.actorName`/`actorId` are accepted and ignored; the
    actor is the token holder.
 8. **The jobs domain is server-side (Step 10), and its Dart contract is on the
@@ -490,6 +505,15 @@ every revision, restart or scale. The `gcs` driver and the bucket
    `service_request.created` (sent to every mechanic), and `accountApproved` is
    `verification_request.updated`. A closed app hears nothing until a push
    provider is chosen.
+14. **Chat is served but not in `on_go_shared`** (`feature/step-10-chat`).
+   `GET` and `POST /service-requests/:id/chat`, `POST .../chat/images`
+   (multipart: optional `body` and `replyToId` fields before the `file`),
+   `POST .../chat/read` with `{}` or `{ "upToMessageId" }`, and
+   `GET /chat/unread`. The app deletes a chat once the job is paid; the server
+   keeps it readable to both and closed. The app's `ChatMessage.imagePath`
+   becomes `imageUrl`, a signed link that expires after `FILE_URL_TTL_SECONDS`,
+   so a screen re-reads the thread for fresh links. `chat_message.created`
+   carries the message to both parties.
 
 ## Rules
 
