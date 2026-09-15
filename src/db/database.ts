@@ -221,3 +221,12 @@ export function safeIdentifier<T extends string>(
 export function safeSortDirection(candidate: unknown): 'ASC' | 'DESC' {
   return typeof candidate === 'string' && candidate.toUpperCase() === 'ASC' ? 'ASC' : 'DESC';
 }
+
+/**
+ * Neutralises LIKE wildcards (%, _, \) in a caller's search term, so a search
+ * is a literal substring match and cannot be turned into "match everything".
+ * Pair it with `ESCAPE '\'` in the query.
+ */
+export function escapeLike(term: string): string {
+  return term.replace(/[\\%_]/g, (char) => `\\${char}`);
+}

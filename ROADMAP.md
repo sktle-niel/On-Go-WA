@@ -117,7 +117,7 @@ not a superuser.
 
 ---
 
-## Step 4 — README for the front-end developer `[ ]`
+## Step 4 — README for the front-end developer `[~]` (API hand-off done via the integration guide; repo quick-start README pending)
 
 **Goal.** Someone who has never seen this repo can run it and integrate.
 
@@ -292,7 +292,7 @@ groups.
 
 ---
 
-## Step 10a — Locations (`LocationApi`) `[ ]`
+## Step 10a — Locations (`LocationApi`) `[x]` (done 2026-09-15)
 
 **Goal.** The phone reports where it is; the server keeps the latest fix per
 user and answers "which open jobs are near this mechanic". Added to
@@ -300,22 +300,22 @@ user and answers "which open jobs are near this mechanic". Added to
 `place.dart`).
 
 **Tasks.**
-- [ ] Migration 005: `user_locations` (one row per user: point, recorded_at,
+- [x] Migration 012 (planned as 005): `user_locations` (one row per user: point, recorded_at,
       accuracy_m, source, role, availability, updated_at) plus a `place` jsonb
       column on `service_requests` for the job Place. Haversine in SQL is
       enough at service-radius distances; PostGIS only if "near me" lists grow.
-- [ ] `POST /locations` (bearer): body is `LocationUpdate`; `userId` in the body
+- [x] `POST /locations` (bearer): body is `LocationUpdate`; `userId` in the body
       is ignored, the token holder is the subject; `role` must match the
       caller; `availability` accepted for mechanics only. Upsert.
-- [ ] `GET /users/:userId/location` (bearer): own location, console roles, or
+- [x] `GET /users/:userId/location` (bearer): own location, console roles, or
       the counterpart on an active job; otherwise 404.
-- [ ] `GET /mechanics/:mechanicId/nearby-jobs?radiusKm=` (bearer): the mechanic
+- [x] `GET /mechanics/:mechanicId/nearby-jobs?radiusKm=` (bearer): the mechanic
       themself or a console role. Implements `isJobWithinServiceRadius`
       exactly: radius > 0, valid points, availability `available` (or unset),
       distance <= radius, edge counts as in; returns pending job ids.
-- [ ] Enum wire values are the Dart enum **names**: `gps | lastKnown | manual`,
+- [x] Enum wire values are the Dart enum **names**: `gps | lastKnown | manual`,
       `client | mechanic`, `available | onJob | offline`.
-- [ ] Integration tests on PGlite, including the radius edge and the
+- [x] Integration tests on PGlite, including the radius edge and the
       availability skip.
 - [ ] Update the integration guide and regenerate the docx.
 
@@ -323,12 +323,23 @@ user and answers "which open jobs are near this mechanic". Added to
 the pending requests inside its radius. Depends on jobs having locations, so
 it lands with or right after the first slice of Step 10.
 
+**Result (2026-09-15).** Migration 012 adds `user_locations` (one row per user,
+replaced by each report) and `ongo_great_circle_m`, the haversine of
+`GeoPoint.distanceTo` in the same order of operations. The three routes follow
+the tasks above: `fetchLastKnown` answers 404 for anything the caller may not
+see, and nearby jobs come back nearest first. No `place` column, because the
+app's bookings carry only text and coordinates. Found on the way: the shared
+`Nullable` schema listed the value before null, so the validator's type
+coercion turned a booking's `latitude: null` into 0. Null is now tried first,
+and the migration repairs (0, 0) rows. 7 tests. The integration guide and its
+docx are not updated.
+
 **Model.** Mid-tier model; top-tier review for the ownership rules on
 `GET /users/:userId/location`.
 
 ---
 
-## Step 10 — The jobs domain `[ ]`
+## Step 10 — The jobs domain `[~]` (in progress; slices 1–7 done by 2026-09-15)
 
 **Goal.** Help requests, quotes, ETA, chat, reviews and QR payments move from
 the mobile app's memory to the server, so two devices see the same job.
@@ -348,6 +359,90 @@ the mobile app's memory to the server, so two devices see the same job.
 
 **Done when.** A client on one phone and a mechanic on another complete a job
 end to end through the API.
+
+**Slice 7 done (2026-09-15): reviews and leaderboard.** No migration: 001 already
+had `reviews` (one per client per mechanic) and `review_likes`. A client creates
+or edits their review of a mechanic (`PUT /mechanics/:id/review`, 1 to 5 stars
+and a comment) once that mechanic has completed a paid job for them, which the
+app never checked; the mechanic hears `review.submitted`. Reviews list newest
+first with the average and star distribution (`GET /mechanics/:id/reviews`), any
+client or mechanic marks one helpful once (`PUT`/`DELETE /reviews/:id/helpful`),
+and `GET /leaderboard` ranks approved, active mechanics by rating or by review
+count, with a literal name search and an overall rank. No tier, since the app's
+"Gold" had no rule. 5 tests. Remaining: chat.
+
+**Slice 6 done (2026-09-15): cancel and expiry.** Migration 011 backfills
+completion deadlines and indexes the expiry sweep. Accepting a quote or an
+Emergency stamps `deadline_at` (Emergency 12h, Urgent 3d, Normal none) and
+clears old cancel and expiry stamps. The client cancels (`/cancel`, the app's
+"Delete") or reopens (`/reopen`, "Revert to Pending") a matched job once the
+mechanic's quoted arrival time has passed or they have arrived; a refusal
+carries `details.cancellableAt`. The assigned mechanic cancels a Normal or
+Urgent job with a reason (`/mechanic-cancel`). An Urgent or Emergency job not
+under way by its deadline returns to the pool, stamped with who let it lapse;
+the sweep runs before every jobs route and on a background timer
+(`JOB_EXPIRY_SWEEP_SECONDS`). Jobs back in the pool are announced to every
+mechanic. Stricter than the app, on purpose: no client cancel once work has
+started, no mechanic cancel after any progress step (the app checked only
+navigating), the cancelling mechanic's quote is withdrawn, an Emergency accept
+record is withdrawn on reopen, and the client can no longer accept an
+Emergency's accept record. 9 tests.
+
+**Slice 5 done (2026-09-15): payment and points.** Migration 010 adds the
+Emergency agreed amount, settlement columns on payments with one completed
+payment per request, and an append-only `points_ledger`; `revenue_ledger` is
+retired. The client pays a finished job (`POST /service-requests/:id/pay`) and
+it closes. In one transaction the server settles the quote price or the agreed
+amount, the priority fee from the request (optionally paid with points, and
+charged in pesos on a short balance, never waived), and points for both sides
+from the policy. Idempotent and race-safe, with `expectedAmount` to refuse a
+changed price. The assigned mechanic sets an Emergency's amount
+(`PUT .../agreed-amount`), a mechanic converts points to balance
+(`POST /points/convert`), and both roles read `GET /points/wallet`. Revenue is
+read from payments, and `POST /payments` books nothing. 8 new tests; the
+revenue tests were rewritten around server-settled payments.
+
+**Security fix (2026-09-15): the open pool.** `GET /service-requests?scope=open`
+answered any signed-in user, so a client could list every other client's
+pending request with name, address and coordinates. It now answers 403 to
+clients and records `authz.denied`; mechanics and console roles are unchanged.
+1 test. Agreed order from here: payments + points → cancel + expiry sweep →
+locations (Step 10a) → reviews + leaderboard → chat. Whether unapproved
+mechanics should see exact coordinates is an open decision.
+
+**Slice 4 done (2026-09-14): the service-status machine.** Migration 009 adds
+the progress flags (navigating, en_route, arrived, work_started,
+service_completed) and their timestamps to service_requests. Five mechanic-only
+endpoints advance a matched job; each is idempotent (COALESCE keeps the first
+timestamp), gated (work needs arrival, service-complete needs work), and locks
+the request row so it cannot race a cancel or expiry. service_completed leaves
+the request matched — payment closes it. 6 tests.
+
+**Slice 3 done (2026-09-14): accept (the atomic claim).** Migration 008 adds a
+partial unique index for one active emergency per mechanic. The client accepts a
+live quote (`/quotes/:quoteId/accept`) and a mechanic accepts an emergency
+first-come (`/service-requests/:id/accept`); both flip the request to matched
+under a `FOR UPDATE` lock with a guarded `WHERE status = pending`, so two accepts
+on the same request — proven by parallel-accept tests for both flows — leave
+exactly one winner. Emergency accept writes the accept record (a quote,
+accepted=true, price 0) and is capped to the 12-hour window. 8 tests.
+
+**Slice 2 done (2026-09-14): quotes.** Migration 007 adds withdrawn_at,
+rejected_at and a rating snapshot to quotes. An approved mechanic (verification
+approved) sends a quote on a pending Normal/Urgent request: one live quote per
+mechanic, the ETA capped to the completion window, a rejected mechanic barred
+from re-quoting, a withdrawn quote re-sendable. The client rejects a specific
+quote; the mechanic withdraws their own. Events quote.submitted / quote.updated.
+7 tests. Emergency stays accept-only (slice 3).
+
+**Slice 1 done (2026-09-14): service requests (booking).** Migration 006 adds
+location, surcharge and the cancel/expiry stamps to service_requests, plus a
+partial unique index for one active request per client. `jobs.service.ts` and
+`/service-requests` routes: book (client), list (`?scope=open` pool for
+mechanics, `?scope=mine` own/assigned), read (ownership-gated), cancel (guarded
+UPDATE). Concurrency proven by a two-rapid-bookings test. Events
+`service_request.created` / `.updated`. 7 tests. Next slices: quotes → accept
+(atomic claim) → status machine → chat → payments → reviews → leaderboard.
 
 **Model.** Plan on a top-tier model; implement slices on a mid-tier model; review
 money and state-machine code on a top model.

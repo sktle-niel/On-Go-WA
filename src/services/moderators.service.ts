@@ -334,8 +334,7 @@ export async function updateModeratorProfile(
   const named = input.name !== undefined;
   const { first, last } = named ? splitName(input.name ?? '') : { first: '', last: '' };
   const photoProvided = input.photoUrl !== undefined;
-  // `Nullable(string)` under ajv `coerceTypes` turns an incoming null into '',
-  // so an empty value means "clear it" and is stored as NULL, not ''.
+  // Null or an empty value both mean "clear it", stored as NULL, not ''.
   const photoValue = input.photoUrl && input.photoUrl.length > 0 ? input.photoUrl : null;
 
   await db.query(

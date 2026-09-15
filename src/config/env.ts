@@ -118,6 +118,9 @@ const schema = z
     // ── Limits ──────────────────────────────────────────────────────────────
     MAX_REQUEST_BODY_BYTES: z.coerce.number().int().min(1024).default(256 * 1024),
     WS_HEARTBEAT_SECONDS: durationSeconds(30),
+    /** How often the job expiry sweep runs in the background, in seconds; 0
+     *  turns the timer off. Every jobs route also sweeps before it runs. */
+    JOB_EXPIRY_SWEEP_SECONDS: z.coerce.number().int().min(0).max(3600).default(60),
 
     // ── Load shedding (@fastify/under-pressure) ───────────────────────────
     /** Answer 503 while the event loop lags more than this (ms). 0 disables.

@@ -1,6 +1,6 @@
 import type { AuthContext } from '../auth/guard.js';
 import { displayNameOf } from '../auth/users.js';
-import type { Database, Queryable } from '../db/database.js';
+import { escapeLike, type Database, type Queryable } from '../db/database.js';
 import type { EventBus } from '../events/bus.js';
 import { recordSecurityEvent, SecurityEvent } from '../logging/audit.js';
 import type { Storage } from '../storage/storage.js';
@@ -279,12 +279,6 @@ export async function addVerificationDocument(
   const dto = await toDto(db, docs, fresh);
   await publishUpdate(events, dto, fresh.user_id);
   return dto;
-}
-
-/** Neutralises LIKE wildcards (%, _, \) in a caller's search term, so a search
- *  is a literal substring match and cannot be turned into "match everything". */
-function escapeLike(term: string): string {
-  return term.replace(/[\\%_]/g, (char) => `\\${char}`);
 }
 
 export async function listVerificationRequests(

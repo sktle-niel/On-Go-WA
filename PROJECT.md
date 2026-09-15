@@ -1,6 +1,6 @@
 # On Go Backend — Project Memory
 
-Last updated: 2026-09-14. Keep this file honest: it is what the next session
+Last updated: 2026-09-15. Keep this file honest: it is what the next session
 plans against. Update the **Status** section whenever something is finished.
 
 ## What this is
@@ -74,6 +74,14 @@ migrations/            forward-only SQL, one transaction per file, recorded in s
   004_contract_alignment.sql      can_change_background, document kind/label/file_name,
                                   points_policy, platform_appearance, revenue_ledger,
                                   password_reset_codes
+  005_verification_requests.sql   name/email/document_names + per-request number + one-pending index
+  006_service_requests.sql        location, surcharge, cancel/expiry stamps + one-active-per-client index
+  007_quotes.sql                  withdrawn_at, rejected_at, rating snapshot on quotes
+  008_accept.sql                  one-active-emergency-per-mechanic partial unique index
+  009_job_progress.sql            navigating/en_route/arrived/work_started/service_completed + timestamps
+  010_payments_points.sql         agreed amount, server-settled payments, points_ledger; revenue_ledger retired
+  011_cancel_expiry.sql           deadline backfill + the index the expiry sweep reads
+  012_locations.sql               user_locations, ongo_great_circle_m; repairs (0,0) booking coordinates
 scripts/               migrate, seed-admin, gen-secrets, export-openapi
 src/
   index.ts             entry: loads remote secrets, then imports bootstrap
@@ -95,14 +103,19 @@ src/
   plugins/security.ts  helmet, cors allowlist, cookie, rate-limit (Redis-aware), under-pressure
   plugins/errors.ts    the error envelope for AppError, validation, 4xx, 500
   plugins/docs.ts      @fastify/swagger + swagger-ui (/docs; off in production unless DOCS_ENABLED)
-  schemas/*.ts         TypeBox schemas mirroring on_go_shared DTOs
-  services/*.ts        auth, points, revenue business logic (pure functions over Queryable)
+  delivery/*.ts        password-reset code delivery: log driver + smtp (nodemailer); pure email template
+  storage/*.ts         Storage interface, disk driver, magic-byte validation, signed/public URL signing
+  utils/uploads.ts     multipart file validation (magic bytes, size), used by the upload routes
+  schemas/*.ts         TypeBox schemas mirroring on_go_shared DTOs (+ verification, moderators, jobs)
+  services/*.ts        auth, points, revenue, verification, moderators, jobs, locations, reviews (functions over Queryable)
   routes/health.ts     /health/live, /health/ready
-  routes/v1/*.ts       one file per contract interface, registered under /api/v1
+  routes/v1/*.ts       one file per domain (auth, verification, moderators, revenue, appearance,
+                       points, events, files, jobs, locations, reviews), registered under /api/v1
 test/
   helpers/             env, PGlite database, app factory, createUser/signInAs
   unit/                config, tokens, errors
-  integration/         migrations, health, auth, points, revenue, stubs, events
+  integration/         migrations, health, auth, points, revenue, stubs, events, verification,
+                       moderators, storage, delivery, jobs, quotes, accept, status, payments, cancel, locations, reviews
 Dockerfile             multi-stage, non-root, healthcheck; CMD node dist/src/index.js
 docker-compose.yml     postgres (default), redis (profile), api (profile full)
 .env.example           every setting, with comments
@@ -126,8 +139,9 @@ deploy/CLOUD_RUN.md    step-by-step trial deployment: Cloud Run + Neon + Secret 
   `log` for dev, `smtp` for any provider (Step 8)).
 - Account lockout after N failures; timing-safe unknown-account path.
 - Points policy: public GET, admin PUT, publishes `points_policy.updated`.
-- Revenue: mobile POST `/payments` (idempotent per requestId), admin GET
-  `/revenue/summary` bucketed by month and urgency in `REVENUE_TIMEZONE`.
+- Revenue: admin GET `/revenue/summary` reads completed payments, bucketed by
+  month and urgency in `REVENUE_TIMEZONE`. Mobile POST `/payments` is kept for
+  the contract but books nothing since slice 5 (see the jobs bullet).
 - Appearance: public GET.
 - WebSocket `/api/v1/events`: first-frame auth, audience filtering, heartbeat
   re-checks the session, closes 4401 on sign-out.
@@ -157,10 +171,44 @@ deploy/CLOUD_RUN.md    step-by-step trial deployment: Cloud Run + Neon + Secret 
   `listAuditLog` reads that one stream, so it already includes Step 5 queue
   decisions. Mutations publish `moderator.updated`. Note: the display `role`
   label is always "Moderator" (no column to persist a custom label).
+- Jobs domain (Step 10, in progress — migrations 006–011, not in on_go_shared yet):
+  slice 1 booking (`/service-requests`, one active request per client), slice 2
+  quotes (`MechanicQuote`, ETA cap, one live quote per mechanic, withdraw/reject),
+  slice 3 accept (the atomic claim: client-accept a quote and mechanic-accept an
+  emergency, both under a row lock so exactly one wins; one active emergency per
+  mechanic), slice 4 the status machine (navigating → en_route → arrived →
+  work_started → service_completed, idempotent, gated), slice 5 payment and
+  points (the client pays a finished job and it closes; the server settles the
+  quote price or an Emergency's agreed amount, the priority fee, optionally paid
+  with points, and points for both sides into an append-only `points_ledger`;
+  `/points/wallet` and `/points/convert`), slice 6 cancel and expiry (accept
+  stamps a 12h/3d completion deadline; the client cancels or reopens a matched
+  job once the quoted ETA passes or the mechanic arrives, never after work
+  starts; the mechanic cancels before any progress step; an overdue job not
+  under way returns to the pool, swept before every jobs route and on a
+  timer). Events `service_request.created`/`.updated`, `quote.submitted`/
+  `.updated`, `payment.completed`, slice 7 reviews and leaderboard (see below).
+  Remaining slice: chat.
+- Locations (Step 10a, migration 012): `POST /locations` keeps each account's
+  latest fix (the token holder is the subject; role must be the caller's own;
+  availability for mechanics only); `GET /users/:userId/location` for the owner,
+  the console, or the other party of a matched job, 404 otherwise; and
+  `GET /mechanics/:mechanicId/nearby-jobs` implementing
+  `isJobWithinServiceRadius` with `ongo_great_circle_m`, the haversine of
+  `GeoPoint.distanceTo`, nearest first.
+- Reviews and leaderboard (Step 10 slice 7, no migration): a client creates or
+  edits their one review of a mechanic once that mechanic has completed a paid
+  job for them; reviews list newest first with the average and star
+  distribution; any client or mechanic marks a review helpful once; and
+  `GET /leaderboard` ranks approved, active mechanics by rating or review count.
+- Open-pool fix (2026-09-15): `GET /service-requests?scope=open` answers 403 to
+  clients and records `authz.denied`; mechanics and console roles still read it.
+  Before, any signed-in client could list every pending request with the other
+  client's name, address and coordinates (confirmed with a PGlite probe).
 - Security plugins, docs, health routes.
 - Scripts: migrate, seed-admin, gen-secrets, export-openapi.
 - Dockerfile, docker-compose.yml, .env.example.
-- Test suite (10 files) on PGlite.
+- Test suite (22 files, 137 tests) on PGlite.
 
 ### Implemented since the last hosting snapshot
 
@@ -171,17 +219,18 @@ In background — (Step 7) are all live. Nothing answers `501` anymore.
 ### Verified (2026-09-11)
 
 - `npm run typecheck` clean (TypeScript 7.0.2).
-- `npm test` clean: 51 tests in 10 files on PGlite 0.5.8 (PostgreSQL 18.3
-  in WebAssembly). All four migrations apply there unchanged, including
-  `CREATE ROLE`, `AT TIME ZONE 'Asia/Manila'` and bytea parameters.
+- `npm test` clean: 137 tests on PGlite 0.5.8 (PostgreSQL 18.3 in WebAssembly),
+  re-verified 2026-09-15. Migrations 001–012 apply there unchanged, including
+  `CREATE ROLE`, partial unique indexes, `AT TIME ZONE 'Asia/Manila'` and bytea
+  parameters.
 - Schema files import `Type` from `@fastify/type-provider-typebox`, which
   re-exports the `typebox` v1.3 package the provider is built on. Do not
   add `@sinclair/typebox`; its `Static` types do not resolve through the
   provider.
 
 - `npm run build` clean; the built server boots without a database and
-  answers `/health/live` 200, `/health/ready` 503, `/docs/json` (23 paths)
-  and the 404 envelope (smoke-tested 2026-09-11).
+  answers `/health/live` 200, `/health/ready` 503, `/docs/json` (24 paths as
+  of Step 7) and the 404 envelope.
 
 ### Deployed (2026-09-14, staging)
 
@@ -222,6 +271,25 @@ real deployment needs a GCS driver (see `deploy/CLOUD_RUN.md` §9).
 - The Redis code path (no Redis locally).
 - README.md is not written (Step 4).
 
+### Known issues (confirmed 2026-09-15, owned by later slices)
+
+- After an accept, `service_request.updated` reaches only the two parties, so
+  other mechanics' open pools go stale until they refetch. A job returning to
+  the pool is announced to every mechanic since slice 6.
+- Staging still runs the old `POST /payments`, which books whatever fee is
+  reported, until this branch is deployed with migrations 010–011.
+- The "mechanic is running late" notice is not server-side; the app derives it
+  from `expectedArrivalAt`.
+- `LocationApi` has no watch method, so a client following their mechanic polls
+  `GET /users/:userId/location`; no location event is published.
+- Reviews have no report or removal path for the console yet, and the review
+  list is capped at the newest 200 with no paging.
+- Fixed by slices 5–6 (2026-09-15): the trusted revenue route, finished jobs
+  that never closed, the Emergency accept record's placeholder price, and
+  matched jobs that could neither be cancelled nor expire. Fixed with Step 10a:
+  nullable request fields were coerced by the validator (null became 0, '' or
+  false), so a booking's null coordinates were stored as 0,0.
+
 ## Routes (all under `/api/v1`)
 
 | Method | Path | Contract method | Guard | State |
@@ -244,7 +312,7 @@ real deployment needs a GCS driver (see `deploy/CLOUD_RUN.md` §9).
 | PUT | /moderators/:id/permissions | updatePermissions | admin | live |
 | PATCH | /moderators/:id/profile | updateProfile | admin | live |
 | GET | /audit-log | listAuditLog | admin | live |
-| POST | /payments | reportCompletedPayment | client, mechanic | live |
+| POST | /payments | reportCompletedPayment | client, mechanic; books nothing, 204 only for a paid job of theirs | live |
 | GET | /revenue/summary | fetchSummary | admin | live |
 | GET | /platform/appearance | PlatformAppearanceApi.fetch | public | live |
 | PUT/DELETE | /platform/appearance | publishBackground / clearBackground | console + canChangeBackground | live |
@@ -252,9 +320,30 @@ real deployment needs a GCS driver (see `deploy/CLOUD_RUN.md` §9).
 | GET | /files/* | (addition) serve a stored file | public (`public/`) or a valid signed URL | live |
 | GET | /platform/points-policy | PointsPolicyApi.fetch | public | live |
 | PUT | /platform/points-policy | PointsPolicyApi.update | admin | live |
-| POST | /locations | LocationApi.reportLocation | bearer | not registered (Step 10a) |
-| GET | /users/:userId/location | LocationApi.fetchLastKnown | owner, console | not registered (Step 10a) |
-| GET | /mechanics/:mechanicId/nearby-jobs | LocationApi.findNearbyJobIds | mechanic (self), console | not registered (Step 10a) |
+| POST | /locations | LocationApi.reportLocation | client, mechanic; the token holder is the subject | live |
+| GET | /users/:userId/location | LocationApi.fetchLastKnown | owner, console, or the other party of a matched job; 404 otherwise | live |
+| GET | /mechanics/:mechanicId/nearby-jobs | LocationApi.findNearbyJobIds | the mechanic themself, console | live |
+| PUT | /mechanics/:mechanicId/review | (addition) create or edit your review | client, after a paid job with that mechanic | live |
+| GET | /mechanics/:mechanicId/reviews | (addition) reviews newest first, with average and distribution | bearer | live |
+| PUT/DELETE | /reviews/:reviewId/helpful | (addition) mark or unmark a review helpful | client, mechanic | live |
+| GET | /leaderboard | (addition) approved mechanics ranked by rating or reviews | bearer | live |
+| POST | /service-requests | (addition) book a request | client | live |
+| GET | /service-requests | (addition) list open / mine | bearer; `scope=open` mechanic or console only (client 403) | live |
+| GET | /service-requests/:id | (addition) one request | owner / mechanic / console | live |
+| POST | /service-requests/:id/cancel | (addition) cancel own request: pending, or matched past the ETA lock and before work | client | live |
+| POST | /service-requests/:id/reopen | (addition) put a matched job back in the pool, same lock | client (owner) | live |
+| POST | /service-requests/:id/mechanic-cancel | (addition) back out before any progress step, with a reason; not an Emergency | assigned mechanic | live |
+| POST | /service-requests/:id/quotes | (addition) send a quote | mechanic (approved) | live |
+| GET | /service-requests/:id/quotes | (addition) list quotes | owner / mechanic / console | live |
+| POST | /service-requests/:id/quotes/withdraw | (addition) withdraw own quote | mechanic | live |
+| POST | /service-requests/:id/quotes/:quoteId/reject | (addition) reject a quote | client (owner) | live |
+| POST | /service-requests/:id/quotes/:quoteId/accept | (addition) accept a quote | client (owner) | live |
+| POST | /service-requests/:id/accept | (addition) accept an emergency | mechanic (approved) | live |
+| POST | /service-requests/:id/{navigating,en-route,arrived,start-work,complete-service} | (addition) advance a matched job | assigned mechanic | live |
+| PUT | /service-requests/:id/agreed-amount | (addition) set an Emergency's agreed price | assigned mechanic, until paid | live |
+| POST | /service-requests/:id/pay | (addition) pay a finished job, which closes it | client (owner) | live |
+| GET | /points/wallet | (addition) points balance and entries, mechanic earnings | client, mechanic | live |
+| POST | /points/convert | (addition) convert points to balance | mechanic | live |
 | WS | /events | every `watch*` | first-frame auth | live |
 | GET | /health/live, /health/ready | — | public | live |
 
@@ -269,18 +358,53 @@ real deployment needs a GCS driver (see `deploy/CLOUD_RUN.md` §9).
    `client` and `demo-mechanic` were local shortcuts and do not exist here.
 5. Access tokens expire in 10 minutes; clients must refresh on `token_expired`.
 6. `watch*` streams are one WebSocket with the protocol in
-   `src/routes/v1/events.ts`. Event names so far: `points_policy.updated`, `verification_request.updated`, `moderator.updated`, `platform_appearance.updated`.
+   `src/routes/v1/events.ts`. Event names so far: `points_policy.updated`, `verification_request.updated`, `moderator.updated`, `platform_appearance.updated`, `service_request.created`, `service_request.updated`, `quote.submitted`, `quote.updated`, `payment.completed`, `review.submitted`.
 7. `ModerationDecision.actorName`/`actorId` are accepted and ignored; the
    actor is the token holder.
-8. The jobs domain (help requests, quotes, ETA, chat, reviews, QR payments)
-   is not in the contract at all; the mobile app keeps it in memory. Tables
-   exist in 001 for when it moves server-side.
-9. **`LocationApi` (added to `on_go_shared` upstream on 2026-09-13) is not served
-   yet:** `POST /locations`, `GET /users/:userId/location`,
-   `GET /mechanics/:mechanicId/nearby-jobs?radiusKm=`. Models `GeoPoint`,
-   `LocationUpdate` (`source`, `role`, `availability` travel as Dart enum
-   names) and `Place`. Planned as ROADMAP Step 10a. The routes are not
-   registered, so they answer 404 today, not 501.
+8. **The jobs domain is moving server-side (Step 10, in progress) and is not in
+   `on_go_shared` yet — add it with the front-end dev.** Live so far: booking
+   (`ServiceRequest`), quotes (`MechanicQuote`), accept (client-accept + emergency
+   first-come), and the status machine. Routes are under `/service-requests` (see
+   the Routes table); `?scope=open` is for mechanics and console roles only and
+   answers 403 to a client. Wire notes: `urgency` uses the capitalized
+   `Normal|Urgent|Emergency`; the surcharge (priority fee 0/50/100) is server-set
+   from urgency; ETA is in minutes, capped to the completion window (Emergency
+   12h, Urgent 3d, Normal none). Events: `service_request.created`/`.updated`,
+   `quote.submitted`/`.updated`, `payment.completed` (admin). Payment and the
+   points wallet are live (slice 5), and so are cancel and expiry (slice 6):
+   `/cancel` is the app's "Delete", `/reopen` its "Revert to Pending", and
+   `/mechanic-cancel` the mechanic's "Cancel Job". A refusal under the ETA lock
+   carries `error.details.cancellableAt`, and every request carries
+   `deadlineAt` and `expectedArrivalAt`, so the app's countdowns read the
+   server's clock. The app's own expiry sweep and cancel rules can go. Still to
+   come: chat.
+9. **`LocationApi` is served (Step 10a, 2026-09-15):** `POST /locations`,
+   `GET /users/:userId/location`, `GET /mechanics/:mechanicId/nearby-jobs?radiusKm=`.
+   `source`, `role` and `availability` travel as Dart enum names. For the Dart
+   side: `reportLocation` answers 204 and may leave `userId` null, because the
+   token says who; `fetchLastKnown` answers 404 for any location the caller may
+   not see or that does not exist, which maps to null; `findNearbyJobIds`
+   returns pending job ids, nearest first. The app has no service-radius
+   setting yet, so the caller picks `radiusKm`. `Place` is not stored: bookings
+   still carry only `location` text and coordinates.
+10. **`PlatformRevenueApi.reportCompletedPayment` no longer books revenue**
+   (slice 5). The server settles the payment when the client calls
+   `POST /service-requests/:id/pay`; `POST /payments` answers 204 only for a
+   paid job the caller took part in, and 404 otherwise. The app should call
+   `/pay` (with `expectedAmount` and `payFeeWithPoints` as needed) and read
+   `amountPaid`, `platformFeeCharged`, `feePaidWithPoints`, `pointsAwarded` and
+   `clientPointsAwarded` from the returned request. The points wallet
+   (`GET /points/wallet`, `POST /points/convert`) replaces `PointsWalletStore`;
+   `PointsEntryKind` travels as the Dart enum names.
+11. **Reviews and the leaderboard are served but not in `on_go_shared`.**
+   `PUT /mechanics/:mechanicId/review`, `GET /mechanics/:mechanicId/reviews`,
+   `PUT`/`DELETE /reviews/:reviewId/helpful`, `GET /leaderboard`. The app keys
+   reviews and the leaderboard by mechanic name; the server uses account ids. A
+   review needs a paid job between the client and the mechanic, which the app
+   never required. `updatedAt` is the app's `MechanicReview.date`, and
+   `distribution` matches `ratingDistributionFor`. The leaderboard carries no
+   tier, because "Gold" in the app had no rule behind it. `review.submitted`
+   goes to the rated mechanic.
 
 ## Rules
 

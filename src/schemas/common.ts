@@ -16,7 +16,13 @@ export function StringEnum<T extends string[]>(
   return Type.Unsafe<T[number]>({ type: 'string', enum: values, ...options });
 }
 
-export const Nullable = <T extends TSchema>(schema: T) => Type.Union([schema, Type.Null()]);
+/**
+ * A value or null. Null is listed FIRST on purpose: the validator runs with
+ * `coerceTypes`, and with the value schema first an incoming null is coerced to
+ * fit it (null becomes 0, '' or false) before the null branch is ever tried, so
+ * a booking's `latitude: null` used to be stored as 0.
+ */
+export const Nullable = <T extends TSchema>(schema: T) => Type.Union([Type.Null(), schema]);
 
 export const Uuid = Type.String({ format: 'uuid' });
 export const DateTime = Type.String({ format: 'date-time', description: 'ISO-8601 timestamp, UTC' });
@@ -48,3 +54,5 @@ export function errorResponses(...codes: number[]): Record<number, TSchema> {
 }
 
 export const IdParams = Type.Object({ id: Uuid });
+
+export const MechanicIdParams = Type.Object({ mechanicId: Uuid });

@@ -5,6 +5,7 @@ import { docsEnabled, loadConfig } from './config/env.js';
 import { createPgDatabase } from './db/database.js';
 import { createMemoryBus, createRedisBus } from './events/bus.js';
 import { logger } from './logging/logger.js';
+import { expireOverdueJobs } from './services/jobs.service.js';
 import { createStorage } from './storage/storage.js';
 
 /**
@@ -28,6 +29,7 @@ export async function bootstrap(): Promise<void> {
 
   const app = await buildApp({ config, db, events, redis, storage });
 
+  let sweepTimer: NodeJS.Timeout | undefined;
   let closing = false;
   const shutdown = async (signal: string): Promise<void> => {
     if (closing) return;
@@ -35,6 +37,7 @@ export async function bootstrap(): Promise<void> {
     app.log.info({ signal }, 'shutting down');
     // Whatever happens, do not hang the deploy: exit within 15 s.
     setTimeout(() => process.exit(1), 15_000).unref();
+    if (sweepTimer) clearInterval(sweepTimer);
     try {
       await app.close();
       await events.close();
@@ -62,4 +65,16 @@ export async function bootstrap(): Promise<void> {
     },
     'on go api ready',
   );
+
+  // The completion clock: overdue jobs lapse and their parties hear it even when
+  // nobody is calling the jobs routes (which also sweep before they run).
+  if (config.JOB_EXPIRY_SWEEP_SECONDS > 0) {
+    const sweep = () =>
+      expireOverdueJobs(db, events).catch((err: unknown) =>
+        app.log.error({ err: { message: (err as Error).message } }, 'job expiry sweep failed'),
+      );
+    void sweep();
+    sweepTimer = setInterval(() => void sweep(), config.JOB_EXPIRY_SWEEP_SECONDS * 1000);
+    sweepTimer.unref();
+  }
 }
