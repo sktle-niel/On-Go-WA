@@ -221,12 +221,14 @@ SECURITY.md            where secrets live, the checks, the service's security la
 
 | Where | What it serves | Migrations | `/docs/json` |
 | --- | --- | --- | --- |
-| Staging, revision `ongo-api-00004` (= `main`) | Steps 1–8: auth, verification, moderators, storage, reset codes, points policy, revenue, appearance | 001–005 | 24 paths |
-| Branch `feature/step-10-jobs` (pushed; pull request into `development` not opened yet) | the above, plus Step 10 slices 1–7, Step 10a locations and the payment-report compatibility window | 001–013 | 50 paths |
+| Staging main URL, revision `ongo-api-00004` (100% of traffic) | Steps 1–8: auth, verification, moderators, storage, reset codes, points policy, revenue, appearance | runs on 001–013 | 24 paths |
+| Staging tag `candidate`, revision `ongo-api-00005` (0% of traffic) | the above, plus Step 10 slices 1–7, Step 10a locations and the payment-report compatibility window | 001–013 | 50 paths |
+| `main` (`030651b`, pull request #3) | Step 10 slices 1–7 and Step 10a | 001–012 | 50 paths |
+| `feature/step-10-jobs` | `main` plus the compatibility window (migration 013) and docs; pull request #4 into `main` still to be opened | 001–013 | 50 paths |
 
 Every contract endpoint returns real data; nothing answers `501`. `development`
-is behind `main` by the Steps 5–8 merge, so the jobs pull request also brings it
-level. Releasing the branch: deploy/CLOUD_RUN.md §10.
+was fast-forwarded to `main` on 2026-09-15. Revision 00005 was built from
+`feature/step-10-jobs`, so `main` matches it once pull request #4 merges.
 
 ### Verified (2026-09-11, re-checked 2026-09-15)
 
@@ -268,6 +270,17 @@ level. Releasing the branch: deploy/CLOUD_RUN.md §10.
 - Re-checked 2026-09-15, read-only: still revision `ongo-api-00004` with
   `maxScale=2` and no Redis; `/docs/json` lists 24 paths, with no jobs or
   location routes.
+- **Jobs release, 2026-09-15 (deploy/CLOUD_RUN.md §10, steps 1 and 2 done).**
+  Revision `ongo-api-00005-mir` was deployed from `feature/step-10-jobs` with
+  `--no-traffic --tag candidate --max-instances 1` and
+  `LEGACY_PAYMENT_REPORTS=true`. The `ongo-migrate` job, on that image, applied
+  006–013 on Neon. The candidate answered `/health/ready` with the database up
+  and listed 50 paths, and a smoke run passed: registering a client, `/auth/me`,
+  the wallet, own jobs, the open pool refused to a client, the leaderboard, a
+  location round trip, and the revenue summary refused to a client. The run
+  left one throwaway client account, `release-smoke-1789463051962@example.com`.
+  Revision 00004 still answers normally on the migrated schema.
+- **Step 3 of §10, moving traffic to revision 00005, is left to the owner.**
 
 **Ephemeral storage caveat:** uploaded documents and the background live on the
 container's `/tmp`, lost on every revision/restart/scale. Fine for a demo; a
@@ -284,8 +297,8 @@ real deployment needs a GCS driver (see `deploy/CLOUD_RUN.md` §9).
 ### Not yet verified
 
 - The Redis code path (no Redis locally, and no test covers it).
-- Migrations 006–013 on Neon. PGlite runs them as a superuser, so whether the
-  Neon owner may run every grant in them shows only on the first real run.
+- The jobs release under real use: the candidate passed a smoke run, but no
+  phone has used it through the main URL yet.
 - The jobs flow on two real phones: the app does not call the jobs routes yet.
 - The background expiry timer on Cloud Run, where an idle service has no
   instance running; the sweep before every jobs route covers that.
@@ -297,8 +310,8 @@ real deployment needs a GCS driver (see `deploy/CLOUD_RUN.md` §9).
   without `REDIS_URL`. Events are delivered in memory, so a phone whose socket
   sits on the other instance misses them, and each instance keeps its own
   rate-limit counters. Steps 5–8 events are already exposed to this; the jobs
-  release depends on both phones hearing each change, so it ships with one
-  instance until Redis exists (deploy/CLOUD_RUN.md §10).
+  release depends on both phones hearing each change, so revision 00005 runs
+  on one instance until Redis exists (deploy/CLOUD_RUN.md §10).
 - **Rate limits are keyed by IP address.** Mobile carriers put many phones
   behind one address, so users on one carrier could share the 300 a minute.
   Signed-in traffic should be counted per account.
@@ -315,9 +328,8 @@ real deployment needs a GCS driver (see `deploy/CLOUD_RUN.md` §9).
 - After an accept, `service_request.updated` reaches only the two parties, so
   other mechanics' open pools go stale until they refetch. A job returning to
   the pool is announced to every mechanic since slice 6.
-- Staging still runs the old `POST /payments`, which books whatever fee is
-  reported, until this branch is deployed with migrations 006–013
-  (deploy/CLOUD_RUN.md §10).
+- The staging main URL still runs the old `POST /payments`, which books
+  whatever fee is reported, until traffic moves to revision 00005.
 - `POST /payments` keeps a compatibility window (`LEGACY_PAYMENT_REPORTS`,
   migration 013) while the mobile app settles jobs on the device: the paying
   client's report of a job the server does not hold books into `revenue_ledger`,
@@ -409,8 +421,12 @@ real deployment needs a GCS driver (see `deploy/CLOUD_RUN.md` §9).
    `src/routes/v1/events.ts`. Event names so far: `points_policy.updated`, `verification_request.updated`, `moderator.updated`, `platform_appearance.updated`, `service_request.created`, `service_request.updated`, `quote.submitted`, `quote.updated`, `payment.completed`, `review.submitted`.
 7. `ModerationDecision.actorName`/`actorId` are accepted and ignored; the
    actor is the token holder.
-8. **The jobs domain is moving server-side (Step 10, in progress) and is not in
-   `on_go_shared` yet — add it with the front-end dev.** Live so far: booking
+8. **The jobs domain is server-side (Step 10), and its Dart contract is on the
+   front-end branch `feature/jobs-contract` (commit `56e2389`, 2026-09-15), not
+   merged into `master` yet.** `ServiceRequestApi`, `PointsWalletApi` and
+   `MechanicReviewApi`, with their models and endpoints, were checked against
+   recorded API responses and `openapi.json`; `on_go_api` still needs the HTTP
+   implementations. Live so far: booking
    (`ServiceRequest`), quotes (`MechanicQuote`), accept (client-accept + emergency
    first-come), and the status machine. Routes are under `/service-requests` (see
    the Routes table); `?scope=open` is for mechanics and console roles only and
@@ -446,7 +462,8 @@ real deployment needs a GCS driver (see `deploy/CLOUD_RUN.md` §9).
    `pointsAwarded` and `clientPointsAwarded` from the returned request. The
    points wallet (`GET /points/wallet`, `POST /points/convert`) replaces
    `PointsWalletStore`; `PointsEntryKind` travels as the Dart enum names.
-11. **Reviews and the leaderboard are served but not in `on_go_shared`.**
+11. **Reviews and the leaderboard are served; their contract is on
+   `feature/jobs-contract`.**
    `PUT /mechanics/:mechanicId/review`, `GET /mechanics/:mechanicId/reviews`,
    `PUT`/`DELETE /reviews/:reviewId/helpful`, `GET /leaderboard`. The app keys
    reviews and the leaderboard by mechanic name; the server uses account ids. A
@@ -617,21 +634,26 @@ Verified 2026-09-11 and to be kept true:
 - Git repository since 2026-09-14; remote `origin` is
   `https://github.com/sktle-niel/On-Go-WA.git`, branch `main`. Commits carry
   only the owner's identity (no co-author or tool trailers). Working branch:
-  `development`; `main` is what is deployed. Step 10 lives on
-  `feature/step-10-jobs` (pushed 2026-09-15); its pull request into
-  `development` is still to be opened on GitHub. The `gh` CLI is not installed.
+  `development`; `main` is what is deployed. The owner merged Step 10 into
+  `main` as pull request #3 (`030651b`, 2026-09-15), and `development` was
+  fast-forwarded to it. The later commits on `feature/step-10-jobs` wait for
+  pull request #4 into `main`. The `gh` CLI is not installed; the owner opens
+  and merges pull requests on GitHub.
 - The front-end repo `https://github.com/sktle-niel/On-Go.git` is cloned at
   `../On-Go` on branch `master`, synced 2026-09-15 to `c04792e` ("connect mobile
   app to On Go API"). The pre-sync local edits, an early `RemoteAuthService` now
   superseded by `packages/on_go_api`, are kept in `git stash` there; the older
   local-only branch `local-snapshot` keeps the 2026-09-14 copy. A `git fetch`
-  on 2026-09-15 found nothing newer than `c04792e`. The admin console moved
+  on 2026-09-15 found nothing newer than `c04792e`. The Step 10 Dart contract is
+  on the front-end branch `feature/jobs-contract` (`56e2389`), made in a
+  separate worktree so the local edits there stayed untouched. The admin console moved
   upstream to a separate `on_go_console` repository that is not on this
   machine.
 - The integration guide for the front-end dev lives outside this repository,
   in `../On Go Documentation` (`API-Integration-Guide.md`, its `.docx` and an
-  `openapi.json`). Last updated 2026-09-14, it predates Step 10 and 10a and
-  still describes the old `POST /payments`.
+  `openapi.json`). Version 0.2.0, updated 2026-09-15 for Step 10 and 10a. The
+  `.docx` is rebuilt from the Markdown by saving an HTML rendering through
+  Word, and `openapi.json` there has 50 paths.
 
 ## Commands
 

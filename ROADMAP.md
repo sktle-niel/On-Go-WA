@@ -8,12 +8,17 @@ Status legend: `[ ]` not started · `[~]` in progress · `[x]` done
 **Order from here (planned 2026-09-15).** Details are in the steps below and
 in PROJECT.md → Known issues.
 
-1. Release Step 10 as it stands: open the pull request into `development`,
-   merge to `main`, deploy with one instance and run migrations 006–013
-   (deploy/CLOUD_RUN.md §10). Configure SMTP (§11).
-2. Hand the jobs contract to the front-end dev: add jobs, wallet, reviews and
-   locations to `on_go_shared`, refresh the integration guide, and move the app
-   to `/pay` so `LEGACY_PAYMENT_REPORTS` can close.
+1. Release Step 10 as it stands. Done 2026-09-15: pull request #3 merged into
+   `main`, `development` fast-forwarded, revision 00005 deployed on one
+   instance with no traffic, migrations 006–013 applied on Neon, smoke run
+   passed. Left for the owner: open and merge pull request #4 (the
+   compatibility window and docs), move traffic (deploy/CLOUD_RUN.md §10 step
+   3), and configure SMTP (§11).
+2. Hand the jobs contract to the front-end dev. Done 2026-09-15: the Dart
+   contract is on the front-end branch `feature/jobs-contract`, checked against
+   the API, and the integration guide is at version 0.2.0. Left: the front-end
+   dev merges it, writes the `on_go_api` implementations, and moves the app to
+   `/pay` so `LEGACY_PAYMENT_REPORTS` can close.
 3. Step 10 slice 8, chat, on the `chat_messages` table from 001, with images
    and unread markers.
 4. Storage that survives a restart (a GCS driver, Step 7), then job photos and
@@ -140,7 +145,7 @@ not a superuser.
 
 ---
 
-## Step 4 — README for the front-end developer `[~]` (integration guide written 2026-09-14 outside the repo, now behind Step 10; quick-start README pending)
+## Step 4 — README for the front-end developer `[~]` (integration guide outside the repo, version 0.2.0 on 2026-09-15; quick-start README pending)
 
 **Goal.** Someone who has never seen this repo can run it and integrate.
 
@@ -155,9 +160,9 @@ not a superuser.
       the Dart side.
 - [ ] Deployment reference: ECS Fargate or App Runner, RDS, ElastiCache, S3,
       Secrets Manager, ALB + WAF, CloudWatch.
-- [ ] Bring `../On Go Documentation/API-Integration-Guide.md` and its docx up
+- [x] Bring `../On Go Documentation/API-Integration-Guide.md` and its docx up
       to date with Step 10 and 10a: jobs, pay, wallet, reviews, locations, the
-      compatibility window and the new events.
+      compatibility window and the new events (version 0.2.0, 2026-09-15).
 
 **Done when.** The front-end dev can point the Flutter apps at the API without
 asking questions in chat.
@@ -354,7 +359,7 @@ user and answers "which open jobs are near this mechanic". Added to
       `client | mechanic`, `available | onJob | offline`.
 - [x] Integration tests on PGlite, including the radius edge and the
       availability skip.
-- [ ] Update the integration guide and regenerate the docx.
+- [x] Update the integration guide and regenerate the docx (2026-09-15).
 
 **Done when.** A mechanic phone reports a fix and the nearby-jobs query returns
 the pending requests inside its radius. Depends on jobs having locations, so
@@ -369,7 +374,7 @@ app's bookings carry only text and coordinates. Found on the way: the shared
 `Nullable` schema listed the value before null, so the validator's type
 coercion turned a booking's `latitude: null` into 0. Null is now tried first,
 and the migration repairs (0, 0) rows. 7 tests. The integration guide and its
-docx are not updated.
+docx caught up on 2026-09-15 (version 0.2.0).
 
 **Model.** Mid-tier model; top-tier review for the ownership rules on
 `GET /users/:userId/location`.
@@ -382,11 +387,12 @@ docx are not updated.
 the mobile app's memory to the server, so two devices see the same job.
 
 **Tasks.**
-- [~] Plan first: read `../On-Go/lib/data/quote_store.dart` and `project.md`'s
+- [x] Plan first: read `../On-Go/lib/data/quote_store.dart` and `project.md`'s
       domain-rules table; write the contract additions to `on_go_shared`
-      (DTOs, interfaces, routes) with the front-end dev. The server side is
-      written down (PROJECT.md → Contract gaps 8–13, `openapi.json`); the Dart
-      side is not.
+      (DTOs, interfaces, routes) with the front-end dev. The Dart side is on
+      the front-end branch `feature/jobs-contract` (2026-09-15), checked
+      against recorded responses and `openapi.json`; merging it is the
+      front-end dev's.
 - [x] Decide what stays client-side (countdown rendering) and what the server
       owns (deadlines from `matchedAt`, ETA caps, cancel lock, expiry sweep,
       priority fees, points awards from `points_policy`).
@@ -397,8 +403,9 @@ the mobile app's memory to the server, so two devices see the same job.
       grow.
 - [~] Events for every state change. Missing: other mechanics when a job
       leaves the pool on accept, chat messages, and location updates.
-- [ ] Deploy to staging (deploy/CLOUD_RUN.md §10) and move the app onto the
-      jobs routes.
+- [~] Deploy to staging (deploy/CLOUD_RUN.md §10) and move the app onto the
+      jobs routes. Revision 00005 and migrations 006–013 are live with no
+      traffic (2026-09-15); moving traffic and the app remain.
 - [ ] Slice 8, chat: `chat_messages` (001) already has a body, an image key
       and a reply-to. It needs send and list routes with paging, an event to
       the other party, image upload through storage, and a read marker per
@@ -406,6 +413,16 @@ the mobile app's memory to the server, so two devices see the same job.
 
 **Done when.** A client on one phone and a mechanic on another complete a job
 end to end through the API.
+
+**Release (2026-09-15).** Pull request #3 put slices 1–7 and Step 10a on
+`main`. Revision `ongo-api-00005` was deployed from `feature/step-10-jobs`,
+which adds the compatibility window, with no traffic and one instance; the
+migrate job applied 006–013 on Neon, and the candidate URL passed a smoke run.
+Moving traffic and merging pull request #4 are left to the owner. The Dart
+contract for the jobs, wallet and review routes is on the front-end branch
+`feature/jobs-contract`: 66 checks against recorded responses and
+`openapi.json` passed, and `flutter analyze` on the app reports no issues. The
+integration guide is at version 0.2.0.
 
 **Compatibility (2026-09-15): the live app's payment reports.** The front end's
 `c04792e` connects the app to the API but still settles jobs on the device and

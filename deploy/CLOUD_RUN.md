@@ -253,7 +253,9 @@ adds 006 to 013 and its code reads them, so the schema goes first:
 
 Migrations 006 to 013 only add to the schema, so the previous revision still
 runs on it: rolling back is
-`gcloud run services update-traffic ongo-api --to-revisions ongo-api-00004=100`.
+`gcloud run services update-traffic ongo-api --region asia-southeast1 --to-revisions ongo-api-00004-qxw=100`
+(revision names carry a suffix; `gcloud run revisions list --service ongo-api`
+shows them).
 
 `JOB_EXPIRY_SWEEP_SECONDS` (default 60) needs no setting. With
 `--min-instances 0` the background sweep runs only while an instance is up, and
