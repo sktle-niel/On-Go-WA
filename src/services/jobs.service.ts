@@ -70,6 +70,16 @@ export interface ServiceRequestDto {
   lastCancelledAt: string | null;
   expiredAt: string | null;
   expiredByMechanic: string | null;
+  // Payment (slice 5): null until the job is paid, except the agreed amount.
+  agreedPaymentAmount: number | null;
+  agreedPaymentAmountSetAt: string | null;
+  paymentCompleted: boolean;
+  paymentCompletedAt: string | null;
+  amountPaid: number | null;
+  platformFeeCharged: number | null;
+  feePaidWithPoints: number | null;
+  pointsAwarded: number | null;
+  clientPointsAwarded: number | null;
 }
 
 interface RequestRow {
@@ -102,6 +112,14 @@ interface RequestRow {
   last_cancelled_at: Date | null;
   expired_at: Date | null;
   expired_by_mechanic: string | null;
+  agreed_amount: number | null;
+  agreed_amount_set_at: Date | null;
+  has_payment: boolean;
+  amount_paid: number | null;
+  platform_fee_charged: number | null;
+  fee_paid_with_points: number | null;
+  mechanic_points: number | null;
+  client_points: number | null;
   c_first: string;
   c_last: string;
   c_email: string;
@@ -120,12 +138,18 @@ const SELECT_REQUEST = `
          sr.service_completed, sr.service_completed_at,
          sr.last_cancel_reason, sr.last_cancelled_by, sr.last_cancelled_at,
          sr.expired_at, sr.expired_by_mechanic,
+         sr.agreed_amount::float8 AS agreed_amount, sr.agreed_amount_set_at,
+         (p.id IS NOT NULL) AS has_payment,
+         p.amount::float8 AS amount_paid, p.platform_fee::float8 AS platform_fee_charged,
+         p.fee_paid_with_points::float8 AS fee_paid_with_points,
+         p.mechanic_points::float8 AS mechanic_points, p.client_points::float8 AS client_points,
          c.first_name AS c_first, c.last_name AS c_last, c.email AS c_email,
          (sr.mechanic_id IS NOT NULL) AS has_mechanic,
          m.first_name AS m_first, m.last_name AS m_last, m.email AS m_email
     FROM service_requests sr
     JOIN users c ON c.id = sr.client_id
-    LEFT JOIN users m ON m.id = sr.mechanic_id`;
+    LEFT JOIN users m ON m.id = sr.mechanic_id
+    LEFT JOIN payments p ON p.request_id = sr.id AND p.status = 'completed'::payment_status`;
 
 function toDto(row: RequestRow): ServiceRequestDto {
   const iso = (d: Date | null): string | null => (d ? d.toISOString() : null);
@@ -163,6 +187,15 @@ function toDto(row: RequestRow): ServiceRequestDto {
     lastCancelledAt: iso(row.last_cancelled_at),
     expiredAt: iso(row.expired_at),
     expiredByMechanic: row.expired_by_mechanic,
+    agreedPaymentAmount: row.agreed_amount,
+    agreedPaymentAmountSetAt: iso(row.agreed_amount_set_at),
+    paymentCompleted: row.has_payment,
+    paymentCompletedAt: row.has_payment ? iso(row.completed_at) : null,
+    amountPaid: row.amount_paid,
+    platformFeeCharged: row.platform_fee_charged,
+    feePaidWithPoints: row.fee_paid_with_points,
+    pointsAwarded: row.mechanic_points,
+    clientPointsAwarded: row.client_points,
   };
 }
 
@@ -688,5 +721,199 @@ export async function advanceJobStatus(
   if (!row) throw new Error('request vanished after status change');
   const dto = toDto(row);
   await events.publish({ name: SERVICE_REQUEST_UPDATED, data: dto, audience: { userIds: parties(dto) } });
+  return dto;
+}
+
+// ─── Slice 5: payment (the client pays; the job closes) ─────────────────────
+
+export const PAYMENT_COMPLETED = 'payment.completed';
+
+const ADMIN_AUDIENCE = ['admin'] as const;
+
+/**
+ * EMERGENCY ONLY. An emergency skips quoting, so the assigned mechanic records
+ * the price agreed with the client in person, and may correct it until the job
+ * is paid. Normal and Urgent jobs are always paid their accepted quote's price.
+ */
+export async function setAgreedAmount(
+  db: Database,
+  events: EventBus,
+  auth: AuthContext,
+  requestId: string,
+  amount: number,
+): Promise<ServiceRequestDto> {
+  await db.withTransaction(async (tx) => {
+    const row = await tx.queryOne<{ mechanic_id: string | null; status: RequestStatusName; urgency: UrgencyName }>(
+      `SELECT mechanic_id, status::text AS status, urgency::text AS urgency
+         FROM service_requests WHERE id = $1 FOR UPDATE`,
+      [requestId],
+    );
+    if (!row || row.mechanic_id !== auth.userId) throw notFound('Request not found.');
+    if (row.urgency !== 'Emergency') {
+      throw conflict('Normal and Urgent jobs are paid their quoted price; only an Emergency takes an agreed amount.');
+    }
+    if (row.status !== 'matched') throw conflict('This job is not in progress.');
+    await tx.query(
+      `UPDATE service_requests SET agreed_amount = round($2::numeric, 2), agreed_amount_set_at = now() WHERE id = $1`,
+      [requestId, amount],
+    );
+  });
+
+  const row = await fetchRequest(db, requestId);
+  if (!row) throw new Error('request vanished after setting the agreed amount');
+  const dto = toDto(row);
+  await events.publish({ name: SERVICE_REQUEST_UPDATED, data: dto, audience: { userIds: parties(dto) } });
+  return dto;
+}
+
+/**
+ * The client pays for a finished job, which is what closes it. Money and points
+ * are settled here in one transaction from the server's own records, never from
+ * a figure the phone sends:
+ *
+ *   - the mechanic's amount: the accepted quote's price, or the agreed amount on
+ *     an Emergency. `expectedAmount`, when sent, must match it, so a client is
+ *     never charged a figure that changed after they looked;
+ *   - ONGO's priority fee: the surcharge fixed on the request at booking,
+ *     optionally paid with the client's points at 1 pt = ₱1 when their balance
+ *     covers it. A short balance leaves the fee charged in pesos, never waived;
+ *   - points: the client's for the job's urgency and the mechanic's per peso of
+ *     payout, from the points policy in force now. The fee spend is checked
+ *     before this job's points are credited, so they cannot pay its own fee.
+ *
+ * Idempotent: paying a job that is already paid returns it unchanged, and the
+ * partial unique indexes on payments and points_ledger turn a racing second pay
+ * into a rollback rather than a second booking.
+ */
+export async function payForJob(
+  db: Database,
+  events: EventBus,
+  auth: AuthContext,
+  requestId: string,
+  input: { payFeeWithPoints?: boolean; expectedAmount?: number },
+): Promise<ServiceRequestDto> {
+  let paidNow = false;
+  let raced: unknown = null;
+  try {
+    paidNow = await db.withTransaction(async (tx) => {
+      const req = await tx.queryOne<{
+        client_id: string;
+        mechanic_id: string | null;
+        status: RequestStatusName;
+        urgency: UrgencyName;
+        issue: string;
+        surcharge: number;
+        service_completed: boolean;
+        agreed_amount: string | null;
+      }>(
+        `SELECT client_id, mechanic_id, status::text AS status, urgency::text AS urgency, issue,
+                surcharge, service_completed, agreed_amount::text AS agreed_amount
+           FROM service_requests WHERE id = $1 FOR UPDATE`,
+        [requestId],
+      );
+      if (!req || req.client_id !== auth.userId) throw notFound('Request not found.');
+      if (req.status === 'completed') return false;
+      const mechanicId = req.mechanic_id;
+      if (req.status !== 'matched' || mechanicId === null) throw conflict('This job is not in progress.');
+      if (!req.service_completed) throw conflict('The mechanic has not marked the service complete yet.');
+
+      let amount: string;
+      if (req.urgency === 'Emergency') {
+        if (req.agreed_amount === null) throw conflict('The mechanic has not set the agreed amount yet.');
+        amount = req.agreed_amount;
+      } else {
+        const quote = await tx.queryOne<{ price: string }>(
+          `SELECT price::text AS price FROM quotes WHERE request_id = $1 AND mechanic_id = $2 AND accepted = true`,
+          [requestId, mechanicId],
+        );
+        if (!quote) throw conflict('This job has no accepted quote to pay.');
+        amount = quote.price;
+      }
+      if (
+        input.expectedAmount !== undefined &&
+        Math.round(input.expectedAmount * 100) !== Math.round(Number(amount) * 100)
+      ) {
+        throw conflict('The amount to pay has changed. Review it and pay again.');
+      }
+
+      const fee = req.surcharge;
+      let feePaidWithPoints: number | null = null;
+      if (input.payFeeWithPoints === true && fee > 0) {
+        // Serialize this client's points movements, so two spends cannot both
+        // pass the balance check.
+        await tx.query(`SELECT id FROM users WHERE id = $1 FOR UPDATE`, [auth.userId]);
+        const covered = await tx.queryOne<{ enough: boolean }>(
+          `SELECT COALESCE(SUM(points), 0) >= $2::numeric AS enough FROM points_ledger WHERE user_id = $1`,
+          [auth.userId, fee],
+        );
+        if (covered?.enough === true) {
+          await tx.query(
+            `INSERT INTO points_ledger (user_id, kind, points, pesos, note, request_id)
+             VALUES ($1, 'clientPaidSurcharge'::points_entry_kind, $2::numeric, $3::numeric, $4, $5)`,
+            [auth.userId, -fee, fee, `${req.urgency} priority fee · ${req.issue}`, requestId],
+          );
+          feePaidWithPoints = fee;
+        }
+      }
+
+      const payment = await tx.queryOne<{ client_points: string; mechanic_points: string }>(
+        `INSERT INTO payments
+           (request_id, client_id, mechanic_id, amount, platform_fee, status, idempotency_key,
+            completed_at, fee_paid_with_points, client_points, mechanic_points)
+         VALUES ($1, $2, $3, $4::numeric, $5::numeric, 'completed'::payment_status, $6,
+                 now(), $7::numeric,
+                 (SELECT CASE $8::text WHEN 'Emergency' THEN client_emergency
+                                       WHEN 'Urgent' THEN client_urgent
+                                       ELSE client_normal END
+                    FROM points_policy WHERE id = 1),
+                 (SELECT CASE WHEN $4::numeric > 0 THEN round($4::numeric * mechanic_per_peso, 2) ELSE 0 END
+                    FROM points_policy WHERE id = 1))
+         RETURNING client_points::text AS client_points, mechanic_points::text AS mechanic_points`,
+        [requestId, auth.userId, mechanicId, amount, fee, requestId, feePaidWithPoints, req.urgency],
+      );
+      if (!payment) throw new Error('payment insert produced no row');
+
+      await tx.query(
+        `UPDATE service_requests SET status = 'completed'::request_status, completed_at = now()
+          WHERE id = $1 AND status = 'matched'::request_status`,
+        [requestId],
+      );
+
+      if (Number(payment.client_points) > 0) {
+        await tx.query(
+          `INSERT INTO points_ledger (user_id, kind, points, note, request_id)
+           VALUES ($1, 'clientJobCompleted'::points_entry_kind, $2::numeric, $3, $4)`,
+          [auth.userId, payment.client_points, `${req.urgency} job · ${req.issue}`, requestId],
+        );
+      }
+      if (Number(payment.mechanic_points) > 0) {
+        await tx.query(
+          `INSERT INTO points_ledger (user_id, kind, points, note, request_id)
+           VALUES ($1, 'mechanicJobCompleted'::points_entry_kind, $2::numeric, $3, $4)`,
+          [mechanicId, payment.mechanic_points, req.issue, requestId],
+        );
+      }
+      return true;
+    });
+  } catch (err) {
+    // A racing second pay that lost to a partial unique index: the first one
+    // settled the job, so answer with that (checked below).
+    if (!isUniqueViolation(err)) throw err;
+    raced = err;
+  }
+
+  const row = await fetchRequest(db, requestId);
+  if (!row || row.client_id !== auth.userId) throw notFound('Request not found.');
+  const dto = toDto(row);
+  if (raced !== null && !dto.paymentCompleted) throw raced;
+
+  if (paidNow) {
+    await events.publish({ name: SERVICE_REQUEST_UPDATED, data: dto, audience: { userIds: parties(dto) } });
+    await events.publish({
+      name: PAYMENT_COMPLETED,
+      data: { requestId: dto.id, urgency: dto.urgency, platformFee: dto.platformFeeCharged ?? 0, paidAt: dto.paymentCompletedAt },
+      audience: { roles: ADMIN_AUDIENCE },
+    });
+  }
   return dto;
 }

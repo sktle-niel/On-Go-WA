@@ -41,6 +41,8 @@ export async function registerDocs(app: FastifyInstance, config: AppConfig): Pro
         { name: 'Moderators', description: 'The moderator roster and audit log (admin)' },
         { name: 'Revenue', description: 'Completed payments and platform revenue' },
         { name: 'Platform', description: 'Appearance and points policy' },
+        { name: 'Jobs', description: 'Service requests, quotes, the job status machine and payment' },
+        { name: 'Points', description: 'The points wallet' },
       ],
     },
   });

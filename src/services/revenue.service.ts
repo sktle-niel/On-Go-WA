@@ -1,22 +1,22 @@
 import type { AuthContext } from '../auth/guard.js';
 import type { Queryable } from '../db/database.js';
+import { notFound } from '../utils/errors.js';
 
 /**
  * Platform revenue.
  *
- * The mobile app reports a completed client payment; the console reads the
- * ledger back as months split by urgency. Normal jobs carry no priority fee,
- * so their revenue is legitimately zero while their transaction count is the
- * largest — which is why volume and revenue are reported separately.
+ * Revenue is ONGO's priority fee on every completed payment, and payments are
+ * settled by the server when a client pays for a job (payForJob in
+ * jobs.service.ts). The console reads them back as months split by urgency.
+ * Normal jobs carry no priority fee, so their revenue is legitimately zero
+ * while their transaction count is the largest — which is why volume and
+ * revenue are reported separately.
+ *
+ * The old revenue_ledger, which booked whatever fee the phone reported, is
+ * retired (migration 010): nothing reads or writes it.
  */
 
 export type RevenueUrgency = 'normal' | 'urgent' | 'emergency';
-
-const TO_DB: Record<RevenueUrgency, string> = {
-  normal: 'Normal',
-  urgent: 'Urgent',
-  emergency: 'Emergency',
-};
 
 const FROM_DB: Record<string, RevenueUrgency> = {
   Normal: 'normal',
@@ -52,20 +52,31 @@ export interface PlatformRevenueSummaryDto {
   priorityFeeCount: number;
 }
 
-/** Idempotent: a retried report of the same request books nothing twice. */
-export async function reportCompletedPayment(
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+/**
+ * PlatformRevenueApi.reportCompletedPayment, kept so the contract still has its
+ * route. It books NOTHING: revenue is settled by the server when the client
+ * pays. The report is acknowledged only for a job the caller took part in that
+ * has a completed payment; the fee, urgency and time in the body are ignored,
+ * so a retry is harmless and an invented fee cannot move the figures.
+ */
+export async function acknowledgeReportedPayment(
   db: Queryable,
   auth: AuthContext,
   report: CompletedPaymentReportDto,
-): Promise<{ recorded: boolean }> {
-  const rows = await db.query<{ id: string }>(
-    `INSERT INTO revenue_ledger (request_ref, platform_fee, urgency, paid_at, reported_by)
-     VALUES ($1, $2::numeric, $3::urgency_level, $4::timestamptz, $5)
-     ON CONFLICT (request_ref) DO NOTHING
-     RETURNING id`,
-    [report.requestId, report.platformFee, TO_DB[report.urgency ?? 'normal'], report.paidAt, auth.userId],
+): Promise<void> {
+  const missing = () => notFound('No completed payment for that request.');
+  if (!UUID.test(report.requestId)) throw missing();
+  const row = await db.queryOne<{ paid: boolean }>(
+    `SELECT EXISTS (
+       SELECT 1 FROM payments
+        WHERE request_id = $1 AND status = 'completed'::payment_status
+          AND (client_id = $2 OR mechanic_id = $2)
+     ) AS paid`,
+    [report.requestId, auth.userId],
   );
-  return { recorded: rows.length > 0 };
+  if (row?.paid !== true) throw missing();
 }
 
 interface BucketRow {
@@ -78,12 +89,14 @@ interface BucketRow {
 
 export async function revenueSummary(db: Queryable, timezone: string): Promise<PlatformRevenueSummaryDto> {
   const buckets = await db.query<BucketRow>(
-    `SELECT date_part('year',  paid_at AT TIME ZONE $1)::int AS year,
-            date_part('month', paid_at AT TIME ZONE $1)::int AS month,
-            urgency::text                                     AS urgency,
-            SUM(platform_fee)::float8                         AS revenue,
+    `SELECT date_part('year',  p.completed_at AT TIME ZONE $1)::int AS year,
+            date_part('month', p.completed_at AT TIME ZONE $1)::int AS month,
+            sr.urgency::text                                     AS urgency,
+            SUM(p.platform_fee)::float8                         AS revenue,
             COUNT(*)::int                                     AS transactions
-       FROM revenue_ledger
+       FROM payments p
+       JOIN service_requests sr ON sr.id = p.request_id
+      WHERE p.status = 'completed'::payment_status
       GROUP BY 1, 2, 3
       ORDER BY 1, 2`,
     [timezone],
@@ -91,7 +104,7 @@ export async function revenueSummary(db: Queryable, timezone: string): Promise<P
 
   const fees = await db.queryOne<{ revenue: number; count: number }>(
     `SELECT COALESCE(SUM(platform_fee), 0)::float8 AS revenue, COUNT(*)::int AS count
-       FROM revenue_ledger WHERE platform_fee > 0`,
+       FROM payments WHERE status = 'completed'::payment_status AND platform_fee > 0`,
   );
 
   const months = new Map<string, MonthlyIncomeDto>();

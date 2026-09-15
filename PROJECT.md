@@ -79,6 +79,7 @@ migrations/            forward-only SQL, one transaction per file, recorded in s
   007_quotes.sql                  withdrawn_at, rejected_at, rating snapshot on quotes
   008_accept.sql                  one-active-emergency-per-mechanic partial unique index
   009_job_progress.sql            navigating/en_route/arrived/work_started/service_completed + timestamps
+  010_payments_points.sql         agreed amount, server-settled payments, points_ledger; revenue_ledger retired
 scripts/               migrate, seed-admin, gen-secrets, export-openapi
 src/
   index.ts             entry: loads remote secrets, then imports bootstrap
@@ -112,7 +113,7 @@ test/
   helpers/             env, PGlite database, app factory, createUser/signInAs
   unit/                config, tokens, errors
   integration/         migrations, health, auth, points, revenue, stubs, events, verification,
-                       moderators, storage, delivery, jobs, quotes, accept, status
+                       moderators, storage, delivery, jobs, quotes, accept, status, payments
 Dockerfile             multi-stage, non-root, healthcheck; CMD node dist/src/index.js
 docker-compose.yml     postgres (default), redis (profile), api (profile full)
 .env.example           every setting, with comments
@@ -136,8 +137,9 @@ deploy/CLOUD_RUN.md    step-by-step trial deployment: Cloud Run + Neon + Secret 
   `log` for dev, `smtp` for any provider (Step 8)).
 - Account lockout after N failures; timing-safe unknown-account path.
 - Points policy: public GET, admin PUT, publishes `points_policy.updated`.
-- Revenue: mobile POST `/payments` (idempotent per requestId), admin GET
-  `/revenue/summary` bucketed by month and urgency in `REVENUE_TIMEZONE`.
+- Revenue: admin GET `/revenue/summary` reads completed payments, bucketed by
+  month and urgency in `REVENUE_TIMEZONE`. Mobile POST `/payments` is kept for
+  the contract but books nothing since slice 5 (see the jobs bullet).
 - Appearance: public GET.
 - WebSocket `/api/v1/events`: first-frame auth, audience filtering, heartbeat
   re-checks the session, closes 4401 on sign-out.
@@ -167,15 +169,19 @@ deploy/CLOUD_RUN.md    step-by-step trial deployment: Cloud Run + Neon + Secret 
   `listAuditLog` reads that one stream, so it already includes Step 5 queue
   decisions. Mutations publish `moderator.updated`. Note: the display `role`
   label is always "Moderator" (no column to persist a custom label).
-- Jobs domain (Step 10, in progress — migrations 006–009, not in on_go_shared yet):
+- Jobs domain (Step 10, in progress — migrations 006–010, not in on_go_shared yet):
   slice 1 booking (`/service-requests`, one active request per client), slice 2
   quotes (`MechanicQuote`, ETA cap, one live quote per mechanic, withdraw/reject),
   slice 3 accept (the atomic claim: client-accept a quote and mechanic-accept an
   emergency, both under a row lock so exactly one wins; one active emergency per
   mechanic), slice 4 the status machine (navigating → en_route → arrived →
-  work_started → service_completed, idempotent, gated). Events
-  `service_request.created`/`.updated`, `quote.submitted`/`.updated`. Remaining
-  slices: payments + points, cancel + expiry sweep, reviews + leaderboard, chat.
+  work_started → service_completed, idempotent, gated), slice 5 payment and
+  points (the client pays a finished job and it closes; the server settles the
+  quote price or an Emergency's agreed amount, the priority fee, optionally paid
+  with points, and points for both sides into an append-only `points_ledger`;
+  `/points/wallet` and `/points/convert`). Events `service_request.created`/
+  `.updated`, `quote.submitted`/`.updated`, `payment.completed`. Remaining
+  slices: cancel + expiry sweep, locations, reviews + leaderboard, chat.
 - Open-pool fix (2026-09-15): `GET /service-requests?scope=open` answers 403 to
   clients and records `authz.denied`; mechanics and console roles still read it.
   Before, any signed-in client could list every pending request with the other
@@ -183,7 +189,7 @@ deploy/CLOUD_RUN.md    step-by-step trial deployment: Cloud Run + Neon + Secret 
 - Security plugins, docs, health routes.
 - Scripts: migrate, seed-admin, gen-secrets, export-openapi.
 - Dockerfile, docker-compose.yml, .env.example.
-- Test suite (18 files, 108 tests) on PGlite.
+- Test suite (19 files, 116 tests) on PGlite.
 
 ### Implemented since the last hosting snapshot
 
@@ -194,8 +200,8 @@ In background — (Step 7) are all live. Nothing answers `501` anymore.
 ### Verified (2026-09-11)
 
 - `npm run typecheck` clean (TypeScript 7.0.2).
-- `npm test` clean: 108 tests on PGlite 0.5.8 (PostgreSQL 18.3 in WebAssembly),
-  re-verified 2026-09-15. Migrations 001–009 apply there unchanged, including
+- `npm test` clean: 116 tests on PGlite 0.5.8 (PostgreSQL 18.3 in WebAssembly),
+  re-verified 2026-09-15. Migrations 001–010 apply there unchanged, including
   `CREATE ROLE`, partial unique indexes, `AT TIME ZONE 'Asia/Manila'` and bytea
   parameters.
 - Schema files import `Type` from `@fastify/type-provider-typebox`, which
@@ -248,19 +254,15 @@ real deployment needs a GCS driver (see `deploy/CLOUD_RUN.md` §9).
 
 ### Known issues (confirmed 2026-09-15, owned by later slices)
 
-- `POST /payments` trusts the phone: any client or mechanic can book any
-  platform fee against any request id, and it shows in the revenue summary.
-  The payments slice replaces it with a fee computed from the request's
-  surcharge. Staging holds demo data only until then.
-- A finished job stays `matched` (there is no payment step yet), and the
-  one-active-request index then blocks that client from booking again. The
-  payments slice closes jobs.
 - A matched job can neither be cancelled nor expire: `deadline_at` is never
-  written and there is no sweep. The cancel + expiry slice adds both.
+  written and there is no sweep. Until the cancel + expiry slice, a job whose
+  mechanic disappears holds the client's one active slot.
 - After an accept, `service_request.updated` reaches only the two parties, so
   other mechanics' open pools go stale until they refetch.
-- The emergency accept record stores price 0; payments needs a separate agreed
-  amount (the app keeps `agreedPaymentAmount` for this).
+- Staging still runs the old `POST /payments`, which books whatever fee is
+  reported, until this branch is deployed with migration 010.
+- Fixed by slice 5 (2026-09-15): the trusted revenue route, finished jobs that
+  never closed, and the Emergency accept record's placeholder price.
 
 ## Routes (all under `/api/v1`)
 
@@ -284,7 +286,7 @@ real deployment needs a GCS driver (see `deploy/CLOUD_RUN.md` §9).
 | PUT | /moderators/:id/permissions | updatePermissions | admin | live |
 | PATCH | /moderators/:id/profile | updateProfile | admin | live |
 | GET | /audit-log | listAuditLog | admin | live |
-| POST | /payments | reportCompletedPayment | client, mechanic | live |
+| POST | /payments | reportCompletedPayment | client, mechanic; books nothing, 204 only for a paid job of theirs | live |
 | GET | /revenue/summary | fetchSummary | admin | live |
 | GET | /platform/appearance | PlatformAppearanceApi.fetch | public | live |
 | PUT/DELETE | /platform/appearance | publishBackground / clearBackground | console + canChangeBackground | live |
@@ -306,6 +308,10 @@ real deployment needs a GCS driver (see `deploy/CLOUD_RUN.md` §9).
 | POST | /service-requests/:id/quotes/:quoteId/accept | (addition) accept a quote | client (owner) | live |
 | POST | /service-requests/:id/accept | (addition) accept an emergency | mechanic (approved) | live |
 | POST | /service-requests/:id/{navigating,en-route,arrived,start-work,complete-service} | (addition) advance a matched job | assigned mechanic | live |
+| PUT | /service-requests/:id/agreed-amount | (addition) set an Emergency's agreed price | assigned mechanic, until paid | live |
+| POST | /service-requests/:id/pay | (addition) pay a finished job, which closes it | client (owner) | live |
+| GET | /points/wallet | (addition) points balance and entries, mechanic earnings | client, mechanic | live |
+| POST | /points/convert | (addition) convert points to balance | mechanic | live |
 | WS | /events | every `watch*` | first-frame auth | live |
 | GET | /health/live, /health/ready | — | public | live |
 
@@ -320,7 +326,7 @@ real deployment needs a GCS driver (see `deploy/CLOUD_RUN.md` §9).
    `client` and `demo-mechanic` were local shortcuts and do not exist here.
 5. Access tokens expire in 10 minutes; clients must refresh on `token_expired`.
 6. `watch*` streams are one WebSocket with the protocol in
-   `src/routes/v1/events.ts`. Event names so far: `points_policy.updated`, `verification_request.updated`, `moderator.updated`, `platform_appearance.updated`, `service_request.created`, `service_request.updated`, `quote.submitted`, `quote.updated`.
+   `src/routes/v1/events.ts`. Event names so far: `points_policy.updated`, `verification_request.updated`, `moderator.updated`, `platform_appearance.updated`, `service_request.created`, `service_request.updated`, `quote.submitted`, `quote.updated`, `payment.completed`.
 7. `ModerationDecision.actorName`/`actorId` are accepted and ignored; the
    actor is the token holder.
 8. **The jobs domain is moving server-side (Step 10, in progress) and is not in
@@ -332,7 +338,8 @@ real deployment needs a GCS driver (see `deploy/CLOUD_RUN.md` §9).
    `Normal|Urgent|Emergency`; the surcharge (priority fee 0/50/100) is server-set
    from urgency; ETA is in minutes, capped to the completion window (Emergency
    12h, Urgent 3d, Normal none). Events: `service_request.created`/`.updated`,
-   `quote.submitted`/`.updated`. Still to come: payments + points, cancel/expiry,
+   `quote.submitted`/`.updated`, `payment.completed` (admin). Payment and the
+   points wallet are live (slice 5). Still to come: cancel/expiry, locations,
    reviews/leaderboard, chat.
 9. **`LocationApi` (added to `on_go_shared` upstream on 2026-09-13) is not served
    yet:** `POST /locations`, `GET /users/:userId/location`,
@@ -340,6 +347,15 @@ real deployment needs a GCS driver (see `deploy/CLOUD_RUN.md` §9).
    `LocationUpdate` (`source`, `role`, `availability` travel as Dart enum
    names) and `Place`. Planned as ROADMAP Step 10a. The routes are not
    registered, so they answer 404 today, not 501.
+10. **`PlatformRevenueApi.reportCompletedPayment` no longer books revenue**
+   (slice 5). The server settles the payment when the client calls
+   `POST /service-requests/:id/pay`; `POST /payments` answers 204 only for a
+   paid job the caller took part in, and 404 otherwise. The app should call
+   `/pay` (with `expectedAmount` and `payFeeWithPoints` as needed) and read
+   `amountPaid`, `platformFeeCharged`, `feePaidWithPoints`, `pointsAwarded` and
+   `clientPointsAwarded` from the returned request. The points wallet
+   (`GET /points/wallet`, `POST /points/convert`) replaces `PointsWalletStore`;
+   `PointsEntryKind` travels as the Dart enum names.
 
 ## Rules
 

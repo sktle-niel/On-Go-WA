@@ -328,7 +328,7 @@ it lands with or right after the first slice of Step 10.
 
 ---
 
-## Step 10 — The jobs domain `[~]` (in progress; slices 1–4 done 2026-09-14)
+## Step 10 — The jobs domain `[~]` (in progress; slices 1–5 done by 2026-09-15)
 
 **Goal.** Help requests, quotes, ETA, chat, reviews and QR payments move from
 the mobile app's memory to the server, so two devices see the same job.
@@ -348,6 +348,20 @@ the mobile app's memory to the server, so two devices see the same job.
 
 **Done when.** A client on one phone and a mechanic on another complete a job
 end to end through the API.
+
+**Slice 5 done (2026-09-15): payment and points.** Migration 010 adds the
+Emergency agreed amount, settlement columns on payments with one completed
+payment per request, and an append-only `points_ledger`; `revenue_ledger` is
+retired. The client pays a finished job (`POST /service-requests/:id/pay`) and
+it closes. In one transaction the server settles the quote price or the agreed
+amount, the priority fee from the request (optionally paid with points, and
+charged in pesos on a short balance, never waived), and points for both sides
+from the policy. Idempotent and race-safe, with `expectedAmount` to refuse a
+changed price. The assigned mechanic sets an Emergency's amount
+(`PUT .../agreed-amount`), a mechanic converts points to balance
+(`POST /points/convert`), and both roles read `GET /points/wallet`. Revenue is
+read from payments, and `POST /payments` books nothing. 8 new tests; the
+revenue tests were rewritten around server-settled payments.
 
 **Security fix (2026-09-15): the open pool.** `GET /service-requests?scope=open`
 answered any signed-in user, so a client could list every other client's

@@ -51,6 +51,22 @@ export const ServiceRequest = Type.Object({
   lastCancelledAt: Nullable(DateTime),
   expiredAt: Nullable(DateTime),
   expiredByMechanic: Nullable(Type.String()),
+  // Payment (slice 5): null until the job is paid, except the agreed amount.
+  /** EMERGENCY ONLY: the price the mechanic and client agreed in person, in pesos. */
+  agreedPaymentAmount: Nullable(Type.Number()),
+  agreedPaymentAmountSetAt: Nullable(DateTime),
+  paymentCompleted: Type.Boolean(),
+  paymentCompletedAt: Nullable(DateTime),
+  /** The mechanic's amount as charged, in pesos. */
+  amountPaid: Nullable(Type.Number()),
+  /** ONGO's priority fee as booked at payment, in pesos (0 on a Normal job). */
+  platformFeeCharged: Nullable(Type.Number()),
+  /** Points the client spent on the fee (1 pt = ₱1); null when the fee was paid in pesos. */
+  feePaidWithPoints: Nullable(Type.Number()),
+  /** Points the mechanic earned on this job. */
+  pointsAwarded: Nullable(Type.Number()),
+  /** Points the client earned on this job. */
+  clientPointsAwarded: Nullable(Type.Number()),
 });
 
 export const CreateServiceRequestBody = Type.Object(
@@ -108,6 +124,27 @@ export const SubmitQuoteBody = Type.Object(
 export const AcceptEmergencyBody = Type.Object(
   {
     etaMinutes: Type.Integer({ minimum: 1, maximum: 12 * 60 }),
+  },
+  { additionalProperties: false },
+);
+
+/** EMERGENCY ONLY: the assigned mechanic records the price agreed in person. */
+export const AgreedAmountBody = Type.Object(
+  {
+    amount: Type.Number({ minimum: 0.01, maximum: 1_000_000, description: 'Pesos, rounded to centavos' }),
+  },
+  { additionalProperties: false },
+);
+
+/** The client pays for a finished job. Every figure is settled by the server. */
+export const PayBody = Type.Object(
+  {
+    payFeeWithPoints: Type.Optional(
+      Type.Boolean({ description: 'Spend points on the priority fee when the balance covers it' }),
+    ),
+    expectedAmount: Type.Optional(
+      Type.Number({ minimum: 0, description: 'The mechanic amount the client saw; a different current amount is 409' }),
+    ),
   },
   { additionalProperties: false },
 );

@@ -2,7 +2,7 @@ import type { FastifyPluginAsyncTypebox } from '@fastify/type-provider-typebox';
 import { currentAuth, MOBILE_ROLES, requireAuth } from '../../auth/guard.js';
 import { errorResponses, NoContent } from '../../schemas/common.js';
 import { CompletedPaymentReport, PlatformRevenueSummary } from '../../schemas/revenue.js';
-import { reportCompletedPayment, revenueSummary } from '../../services/revenue.service.js';
+import { acknowledgeReportedPayment, revenueSummary } from '../../services/revenue.service.js';
 
 export const revenueRoutes: FastifyPluginAsyncTypebox = async (app) => {
   app.post(
@@ -11,17 +11,19 @@ export const revenueRoutes: FastifyPluginAsyncTypebox = async (app) => {
       preHandler: [requireAuth({ roles: MOBILE_ROLES })],
       schema: {
         tags: ['Revenue'],
-        summary: 'Report a completed client payment',
+        summary: 'Acknowledge a completed client payment',
         description:
-          'PlatformRevenueApi.reportCompletedPayment. Idempotent per requestId: reporting the ' +
-          'same payment twice books it once. Only the mobile surface can call this.',
+          'PlatformRevenueApi.reportCompletedPayment. Books NOTHING: the server settles revenue when ' +
+          'the client pays (`POST /service-requests/:id/pay`). Answers 204 for a job the caller took ' +
+          'part in that has a completed payment, and 404 otherwise; the fee, urgency and time in the ' +
+          'body are ignored. Only the mobile surface can call this.',
         security: [{ bearerAuth: [] }],
         body: CompletedPaymentReport,
-        response: { 204: NoContent, ...errorResponses(400, 401, 403) },
+        response: { 204: NoContent, ...errorResponses(400, 401, 403, 404) },
       },
     },
     async (request, reply) => {
-      await reportCompletedPayment(app.db, currentAuth(request), request.body);
+      await acknowledgeReportedPayment(app.db, currentAuth(request), request.body);
       return reply.code(204).send(null);
     },
   );

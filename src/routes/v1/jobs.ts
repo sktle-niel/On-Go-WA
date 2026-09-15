@@ -4,10 +4,12 @@ import { currentAuth, requireAuth } from '../../auth/guard.js';
 import { errorResponses, IdParams, Uuid } from '../../schemas/common.js';
 import {
   AcceptEmergencyBody,
+  AgreedAmountBody,
   CancelServiceRequestBody,
   CreateServiceRequestBody,
   ListRequestsQuery,
   MechanicQuote,
+  PayBody,
   ServiceRequest,
   SubmitQuoteBody,
 } from '../../schemas/jobs.js';
@@ -20,7 +22,9 @@ import {
   getServiceRequest,
   listQuotes,
   listServiceRequests,
+  payForJob,
   rejectQuote,
+  setAgreedAmount,
   submitQuote,
   withdrawQuote,
   type StatusStep,
@@ -261,4 +265,50 @@ export const jobRoutes: FastifyPluginAsyncTypebox = async (app) => {
       async (request) => advanceJobStatus(app.db, app.events, currentAuth(request), request.params.id, step),
     );
   }
+
+  // ── Payment (the client pays; the job closes) ─────────────────────────────
+
+  app.put(
+    '/service-requests/:id/agreed-amount',
+    {
+      preHandler: [requireAuth({ roles: ['mechanic'] })],
+      schema: {
+        tags: ['Jobs'],
+        summary: 'Set the agreed amount on an emergency',
+        description:
+          'Addition. EMERGENCY ONLY: the assigned mechanic records the price agreed with the client in ' +
+          'person, and may correct it until the job is paid. Normal and Urgent jobs are paid their ' +
+          'accepted quote, so they answer 409 here.',
+        security: [{ bearerAuth: [] }],
+        params: IdParams,
+        body: AgreedAmountBody,
+        response: { 200: ServiceRequest, ...errorResponses(400, 401, 403, 404, 409) },
+      },
+    },
+    async (request) =>
+      setAgreedAmount(app.db, app.events, currentAuth(request), request.params.id, request.body.amount),
+  );
+
+  app.post(
+    '/service-requests/:id/pay',
+    {
+      preHandler: [requireAuth({ roles: ['client'] })],
+      schema: {
+        tags: ['Jobs'],
+        summary: 'Pay for a finished job',
+        description:
+          'Addition. The request owner pays once the mechanic has marked the service complete, and the ' +
+          'request becomes completed. The server settles every figure: the accepted quote price (or the ' +
+          'agreed amount on an Emergency), the priority fee fixed on the request, and points from the ' +
+          'policy. `payFeeWithPoints` spends points on the fee when the balance covers it; otherwise the ' +
+          'fee is charged in pesos. Send `expectedAmount` to refuse a price that changed (409). ' +
+          'Idempotent: paying a paid job returns it unchanged. Send a JSON body, `{}` at least.',
+        security: [{ bearerAuth: [] }],
+        params: IdParams,
+        body: PayBody,
+        response: { 200: ServiceRequest, ...errorResponses(400, 401, 403, 404, 409) },
+      },
+    },
+    async (request) => payForJob(app.db, app.events, currentAuth(request), request.params.id, request.body),
+  );
 };
