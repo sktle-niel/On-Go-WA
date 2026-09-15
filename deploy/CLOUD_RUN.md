@@ -212,3 +212,67 @@ Cloud Logging alerts, e.g. on `auth.token.reuse_detected`.
   gains a `gcs` branch, plus a bucket name in the environment. Until then, do
   not tell mechanics their uploaded IDs are safely stored.
 - Alerting on readiness failures, 5xx rate and `auth.token.reuse_detected`.
+
+## 10. Releasing the jobs domain (migrations 006 to 013)
+
+Staging revision `ongo-api-00004` has migrations up to 005. The jobs branch
+adds 006 to 013 and its code reads them, so the schema goes first:
+
+1. Build and deploy the new revision **without traffic**, with the
+   compatibility window on while the mobile app still settles jobs on the
+   device:
+   ```bash
+   gcloud run deploy ongo-api --source . --region asia-southeast1 \
+     --no-traffic --tag candidate \
+     --update-env-vars LEGACY_PAYMENT_REPORTS=true
+   ```
+2. Run the migrations from that revision's image (section 5):
+   ```bash
+   REV=$(gcloud run revisions list --service ongo-api --region asia-southeast1 --limit 1 --format='value(metadata.name)')
+   IMAGE=$(gcloud run revisions describe "$REV" --region asia-southeast1 --format='value(spec.containers[0].image)')
+   gcloud run jobs update ongo-migrate --image "$IMAGE" --region asia-southeast1
+   gcloud run jobs execute ongo-migrate --region asia-southeast1 --wait
+   ```
+   Expected: `applied: 006_service_requests, … 013_legacy_payment_reports`.
+3. Check the candidate on its tagged URL (`/health/ready`, and `/docs/json`
+   listing about 50 paths), then send it traffic:
+   ```bash
+   gcloud run services update-traffic ongo-api --region asia-southeast1 --to-latest
+   ```
+
+Migrations 006 to 013 only add to the schema, so the previous revision still
+runs on it: rolling back is
+`gcloud run services update-traffic ongo-api --to-revisions ongo-api-00004=100`.
+
+`JOB_EXPIRY_SWEEP_SECONDS` (default 60) needs no setting. With
+`--min-instances 0` the background sweep runs only while an instance is up, and
+every jobs route sweeps before it answers anyway. Turn
+`LEGACY_PAYMENT_REPORTS` off (`--update-env-vars LEGACY_PAYMENT_REPORTS=false`)
+once the app pays through `POST /service-requests/:id/pay`.
+
+## 11. Email for password reset codes (SMTP)
+
+Staging runs `DELIVERY_DRIVER=log`: a reset request answers 202, but no code is
+sent and the log records that. To deliver real email:
+
+1. Choose a provider and a sender address you control (Resend, Postmark, Amazon
+   SES, or a mailbox with an app password), and note its SMTP host, port and
+   user.
+2. Store the SMTP password in Secret Manager, piped in from a variable rather
+   than typed on the command line:
+   ```bash
+   printf '%s' "$SMTP_PASSWORD" | gcloud secrets create ongo-smtp-password --data-file=-
+   gcloud secrets add-iam-policy-binding ongo-smtp-password \
+     --member="serviceAccount:$SA" --role=roles/secretmanager.secretAccessor
+   ```
+3. Switch the driver:
+   ```bash
+   gcloud run services update ongo-api --region asia-southeast1 \
+     --update-env-vars DELIVERY_DRIVER=smtp,SMTP_HOST=<smtp host>,SMTP_PORT=587,SMTP_USER=<smtp user>,SMTP_FROM=<sender address> \
+     --update-secrets SMTP_PASSWORD=ongo-smtp-password:latest
+   ```
+   The service refuses to start while any SMTP_* value is missing, so a typo
+   fails the deploy instead of silently sending nothing.
+4. Request a reset for an account you own and check its inbox. A send failure
+   is logged as `password reset email failed to send` and never shown to the
+   caller, whose answer is always 202.

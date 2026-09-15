@@ -1,7 +1,7 @@
 import '../helpers/env.js';
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { docsEnabled, loadConfig, resetConfigCache } from '../../src/config/env.js';
+import { docsEnabled, legacyPaymentReportsEnabled, loadConfig, resetConfigCache } from '../../src/config/env.js';
 
 function withEnv<T>(overrides: Record<string, string | undefined>, fn: () => T): T {
   const saved: Record<string, string | undefined> = {};
@@ -67,4 +67,11 @@ test('production with explicit https origins, verify-full and a CA passes', () =
 
 test('a short signing key is rejected', () => {
   assert.throws(() => withEnv({ JWT_SIGNING_KEY: 'short' }, loadConfig), /JWT_SIGNING_KEY/);
+});
+
+test('legacy payment reports are on outside production, and off in production unless set', () => {
+  assert.equal(legacyPaymentReportsEnabled(loadConfig()), true);
+  const staging = { NODE_ENV: 'production', CORS_ALLOW_LOCALHOST: 'true', PGSSLMODE: 'verify-full' };
+  assert.equal(legacyPaymentReportsEnabled(withEnv(staging, loadConfig)), false);
+  assert.equal(legacyPaymentReportsEnabled(withEnv({ ...staging, LEGACY_PAYMENT_REPORTS: 'true' }, loadConfig)), true);
 });

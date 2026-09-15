@@ -82,6 +82,7 @@ migrations/            forward-only SQL, one transaction per file, recorded in s
   010_payments_points.sql         agreed amount, server-settled payments, points_ledger; revenue_ledger retired
   011_cancel_expiry.sql           deadline backfill + the index the expiry sweep reads
   012_locations.sql               user_locations, ongo_great_circle_m; repairs (0,0) booking coordinates
+  013_legacy_payment_reports.sql  revenue_ledger takes checked device payment reports again
 scripts/               migrate, seed-admin, gen-secrets, export-openapi
 src/
   index.ts             entry: loads remote secrets, then imports bootstrap
@@ -139,9 +140,10 @@ deploy/CLOUD_RUN.md    step-by-step trial deployment: Cloud Run + Neon + Secret 
   `log` for dev, `smtp` for any provider (Step 8)).
 - Account lockout after N failures; timing-safe unknown-account path.
 - Points policy: public GET, admin PUT, publishes `points_policy.updated`.
-- Revenue: admin GET `/revenue/summary` reads completed payments, bucketed by
-  month and urgency in `REVENUE_TIMEZONE`. Mobile POST `/payments` is kept for
-  the contract but books nothing since slice 5 (see the jobs bullet).
+- Revenue: admin GET `/revenue/summary` reads server-settled payments plus,
+  during the compatibility window, device-reported ones, bucketed by month and
+  urgency in `REVENUE_TIMEZONE`. Mobile POST `/payments` books nothing for a job
+  the server holds; see Known issues for the window.
 - Appearance: public GET.
 - WebSocket `/api/v1/events`: first-frame auth, audience filtering, heartbeat
   re-checks the session, closes 4401 on sign-out.
@@ -208,7 +210,7 @@ deploy/CLOUD_RUN.md    step-by-step trial deployment: Cloud Run + Neon + Secret 
 - Security plugins, docs, health routes.
 - Scripts: migrate, seed-admin, gen-secrets, export-openapi.
 - Dockerfile, docker-compose.yml, .env.example.
-- Test suite (22 files, 137 tests) on PGlite.
+- Test suite (22 files, 141 tests) on PGlite.
 
 ### Implemented since the last hosting snapshot
 
@@ -219,8 +221,8 @@ In background — (Step 7) are all live. Nothing answers `501` anymore.
 ### Verified (2026-09-11)
 
 - `npm run typecheck` clean (TypeScript 7.0.2).
-- `npm test` clean: 137 tests on PGlite 0.5.8 (PostgreSQL 18.3 in WebAssembly),
-  re-verified 2026-09-15. Migrations 001–012 apply there unchanged, including
+- `npm test` clean: 141 tests on PGlite 0.5.8 (PostgreSQL 18.3 in WebAssembly),
+  re-verified 2026-09-15. Migrations 001–013 apply there unchanged, including
   `CREATE ROLE`, partial unique indexes, `AT TIME ZONE 'Asia/Manila'` and bytea
   parameters.
 - Schema files import `Type` from `@fastify/type-provider-typebox`, which
@@ -277,7 +279,18 @@ real deployment needs a GCS driver (see `deploy/CLOUD_RUN.md` §9).
   other mechanics' open pools go stale until they refetch. A job returning to
   the pool is announced to every mechanic since slice 6.
 - Staging still runs the old `POST /payments`, which books whatever fee is
-  reported, until this branch is deployed with migrations 010–011.
+  reported, until this branch is deployed with migrations 006–013
+  (deploy/CLOUD_RUN.md §10).
+- `POST /payments` keeps a compatibility window (`LEGACY_PAYMENT_REPORTS`,
+  migration 013) while the mobile app settles jobs on the device: the paying
+  client's report of a job the server does not hold books into `revenue_ledger`,
+  checked (the urgency's real fee, a `paidAt` from the last week, once per job,
+  20 a day, refusals logged). Turn it off once the app pays through
+  `/service-requests/:id/pay`. Rows booked on staging before these checks
+  existed are still counted.
+- Staging does not deliver password reset codes (`DELIVERY_DRIVER=log`), so the
+  app's reset flow over the API cannot finish there until SMTP is configured
+  (deploy/CLOUD_RUN.md §11).
 - The "mechanic is running late" notice is not server-side; the app derives it
   from `expectedArrivalAt`.
 - `LocationApi` has no watch method, so a client following their mechanic polls
@@ -312,7 +325,7 @@ real deployment needs a GCS driver (see `deploy/CLOUD_RUN.md` §9).
 | PUT | /moderators/:id/permissions | updatePermissions | admin | live |
 | PATCH | /moderators/:id/profile | updateProfile | admin | live |
 | GET | /audit-log | listAuditLog | admin | live |
-| POST | /payments | reportCompletedPayment | client, mechanic; books nothing, 204 only for a paid job of theirs | live |
+| POST | /payments | reportCompletedPayment | client, mechanic. Server job: 204 if paid and theirs, books nothing. Device job: the paying client books it, checked, while LEGACY_PAYMENT_REPORTS is on | live |
 | GET | /revenue/summary | fetchSummary | admin | live |
 | GET | /platform/appearance | PlatformAppearanceApi.fetch | public | live |
 | PUT/DELETE | /platform/appearance | publishBackground / clearBackground | console + canChangeBackground | live |
@@ -349,14 +362,12 @@ real deployment needs a GCS driver (see `deploy/CLOUD_RUN.md` §9).
 
 ## Contract gaps to coordinate with the front-end developer
 
-1. `ApiEndpoints.pointsPolicy` in Dart is `/platform/points-policy`; the
-   server serves it under `/api/v1/...` like every other route. Add `$_root`.
-2. The Dart `AuthApi` has no `register`, `refresh` or `me`; the server does.
-3. `resetPassword` is two calls on the server (request a code, confirm with
-   the code and the new password).
-4. `SignInRequest.identifier` is the account **email**. Usernames such as
-   `client` and `demo-mechanic` were local shortcuts and do not exist here.
-5. Access tokens expire in 10 minutes; clients must refresh on `token_expired`.
+1. **Items 1 to 5 of this list were resolved by the front end on 2026-09-15**
+   (`c04792e`, the new `packages/on_go_api`): the points-policy path carries
+   `/api/v1`; `AuthApi` has `register`, `restoreSession` (refresh) and
+   `fetchCurrentAccount` (`/auth/me`); the reset is two calls; sign-in takes the
+   email; `ApiClient` refreshes once on `token_expired`. Its `ApiErrorCodes`
+   are the server's 18 codes.
 6. `watch*` streams are one WebSocket with the protocol in
    `src/routes/v1/events.ts`. Event names so far: `points_policy.updated`, `verification_request.updated`, `moderator.updated`, `platform_appearance.updated`, `service_request.created`, `service_request.updated`, `quote.submitted`, `quote.updated`, `payment.completed`, `review.submitted`.
 7. `ModerationDecision.actorName`/`actorId` are accepted and ignored; the
@@ -387,15 +398,17 @@ real deployment needs a GCS driver (see `deploy/CLOUD_RUN.md` §9).
    returns pending job ids, nearest first. The app has no service-radius
    setting yet, so the caller picks `radiusKm`. `Place` is not stored: bookings
    still carry only `location` text and coordinates.
-10. **`PlatformRevenueApi.reportCompletedPayment` no longer books revenue**
-   (slice 5). The server settles the payment when the client calls
-   `POST /service-requests/:id/pay`; `POST /payments` answers 204 only for a
-   paid job the caller took part in, and 404 otherwise. The app should call
-   `/pay` (with `expectedAmount` and `payFeeWithPoints` as needed) and read
-   `amountPaid`, `platformFeeCharged`, `feePaidWithPoints`, `pointsAwarded` and
-   `clientPointsAwarded` from the returned request. The points wallet
-   (`GET /points/wallet`, `POST /points/convert`) replaces `PointsWalletStore`;
-   `PointsEntryKind` travels as the Dart enum names.
+10. **`PlatformRevenueApi.reportCompletedPayment` books nothing for a job the
+   server holds** (slice 5). The server settles that payment when the client
+   calls `POST /service-requests/:id/pay`, and `POST /payments` answers 204 only
+   for a paid job the caller took part in. The live app still settles jobs on
+   the device and reports them with its own ids; those keep booking through the
+   compatibility window (Known issues) until the app moves to `/pay`. Then it
+   calls `/pay` (with `expectedAmount` and `payFeeWithPoints` as needed) and
+   reads `amountPaid`, `platformFeeCharged`, `feePaidWithPoints`,
+   `pointsAwarded` and `clientPointsAwarded` from the returned request. The
+   points wallet (`GET /points/wallet`, `POST /points/convert`) replaces
+   `PointsWalletStore`; `PointsEntryKind` travels as the Dart enum names.
 11. **Reviews and the leaderboard are served but not in `on_go_shared`.**
    `PUT /mechanics/:mechanicId/review`, `GET /mechanics/:mechanicId/reviews`,
    `PUT`/`DELETE /reviews/:reviewId/helpful`, `GET /leaderboard`. The app keys
@@ -405,6 +418,14 @@ real deployment needs a GCS driver (see `deploy/CLOUD_RUN.md` §9).
    `distribution` matches `ratingDistributionFor`. The leaderboard carries no
    tier, because "Gold" in the app had no rule behind it. `review.submitted`
    goes to the rated mechanic.
+12. **The app's `on_go_api` (2026-09-15) describes an older staging.** It treats
+   verification, moderators and appearance writes as `501` and their events as
+   planned, so it keeps verification local unless `ONGO_API_VERIFICATION=true`.
+   Staging (revision 00004) has served Steps 5 to 8 since 2026-09-14, confirmed
+   from its `/docs/json` on 2026-09-15. Mechanic registration files only
+   `documentNames`; `POST /verification-requests/:id/documents` is not wired.
+   The location routes the app lists as "not in the contract" match the
+   server's and are served from the jobs branch.
 
 ## Rules
 
@@ -552,9 +573,12 @@ Verified 2026-09-11 and to be kept true:
   only the owner's identity (no co-author or tool trailers). Working branch:
   `development`; `main` is what is deployed.
 - The front-end repo `https://github.com/sktle-niel/On-Go.git` is cloned at
-  `../On-Go` on branch `master` (synced 2026-09-14; a local-only branch
-  `local-snapshot` keeps the pre-sync copy). The admin console moved upstream
-  to a separate `on_go_console` repository that is not on this machine.
+  `../On-Go` on branch `master`, synced 2026-09-15 to `c04792e` ("connect mobile
+  app to On Go API"). The pre-sync local edits, an early `RemoteAuthService` now
+  superseded by `packages/on_go_api`, are kept in `git stash` there; the older
+  local-only branch `local-snapshot` keeps the 2026-09-14 copy. The admin
+  console moved upstream to a separate `on_go_console` repository that is not
+  on this machine.
 
 ## Commands
 

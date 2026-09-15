@@ -30,12 +30,13 @@ test('applies every migration once, in order, and then nothing', async () => {
     '010_payments_points',
     '011_cancel_expiry',
     '012_locations',
+    '013_legacy_payment_reports',
   ]);
   assert.deepEqual(first.skipped, []);
 
   const second = await runMigrations(db, MIGRATIONS_DIR);
   assert.deepEqual(second.applied, []);
-  assert.equal(second.skipped.length, 12);
+  assert.equal(second.skipped.length, 13);
 });
 
 test('the contract tables exist with their seed rows', async () => {
@@ -87,19 +88,21 @@ test('the least-privilege roles exist', async () => {
   );
 });
 
-test('the points ledger is append-only for the application role, and the retired revenue ledger read-only', async () => {
+test('the points ledger and the revenue ledger are append-only for the application role', async () => {
   const grants = await db.queryOne<Record<string, boolean>>(
     `SELECT has_table_privilege('ongo_app', 'points_ledger', 'INSERT') AS ledger_insert,
             has_table_privilege('ongo_app', 'points_ledger', 'UPDATE') AS ledger_update,
             has_table_privilege('ongo_app', 'points_ledger', 'DELETE') AS ledger_delete,
             has_table_privilege('ongo_app', 'revenue_ledger', 'SELECT') AS revenue_select,
-            has_table_privilege('ongo_app', 'revenue_ledger', 'INSERT') AS revenue_insert`,
+            has_table_privilege('ongo_app', 'revenue_ledger', 'INSERT') AS revenue_insert,
+            has_table_privilege('ongo_app', 'revenue_ledger', 'UPDATE') AS revenue_update`,
   );
   assert.deepEqual(grants, {
     ledger_insert: true,
     ledger_update: false,
     ledger_delete: false,
     revenue_select: true,
-    revenue_insert: false,
+    revenue_insert: true,
+    revenue_update: false,
   });
 });

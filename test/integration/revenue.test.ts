@@ -1,7 +1,8 @@
 import '../helpers/env.js';
 import assert from 'node:assert/strict';
-import { randomUUID } from 'node:crypto';
 import { after, before, test } from 'node:test';
+import { authenticateAccessToken } from '../../src/auth/guard.js';
+import { reportCompletedPayment } from '../../src/services/revenue.service.js';
 import { bearer, createTestApp, createUser, signInAs, type TestContext } from '../helpers/app.js';
 
 let ctx: TestContext;
@@ -12,11 +13,12 @@ let strangerToken: string;
 let clientId: string;
 let mechanicId: string;
 let paidRequestId: string;
+let unpaidRequestId: string;
 
 /**
  * A settled job written straight to the tables, so its payment time is chosen
- * by the test: calendar bucketing is what this file checks. The pay flow
- * itself is covered in payments.test.ts.
+ * by the test: calendar bucketing is what the summary test checks. The pay
+ * flow itself is covered in payments.test.ts.
  */
 async function settledJob(
   urgency: 'Normal' | 'Urgent' | 'Emergency',
@@ -39,15 +41,15 @@ async function settledJob(
   return request.id;
 }
 
+const minutesAgo = (minutes: number) => new Date(Date.now() - minutes * 60_000).toISOString();
+
 const summary = () => ctx.app.inject({ method: 'GET', url: '/api/v1/revenue/summary', headers: bearer(adminToken) });
 
-const report = (token: string, requestId: string) =>
-  ctx.app.inject({
-    method: 'POST',
-    url: '/api/v1/payments',
-    headers: bearer(token),
-    payload: { requestId, platformFee: 99999, paidAt: '2026-03-15T10:00:00Z', urgency: 'emergency' },
-  });
+const report = (token: string, payload: Record<string, unknown>) =>
+  ctx.app.inject({ method: 'POST', url: '/api/v1/payments', headers: bearer(token), payload });
+
+const ledgerRows = async (ref: string) =>
+  (await ctx.db.queryOne<{ n: number }>('SELECT count(*)::int AS n FROM revenue_ledger WHERE request_ref = $1', [ref]))?.n;
 
 before(async () => {
   ctx = await createTestApp();
@@ -65,6 +67,15 @@ before(async () => {
   await settledJob('Normal', 0, '2026-04-01T00:30:00Z');
   // A payment that did not complete is not revenue.
   await settledJob('Urgent', 50, '2026-03-16T10:00:00Z', 'failed');
+
+  // A job the server holds that is matched but not paid yet.
+  const unpaid = await ctx.db.queryOne<{ id: string }>(
+    `INSERT INTO service_requests (client_id, mechanic_id, status, urgency, issue)
+     VALUES ($1, $2, 'matched'::request_status, 'Normal'::urgency_level, 'Wont start')
+     RETURNING id`,
+    [clientId, mechanicId],
+  );
+  unpaidRequestId = unpaid?.id ?? '';
 });
 
 after(async () => {
@@ -96,22 +107,79 @@ test('the summary reads completed payments, split by month and urgency, in the c
   assert.deepEqual(april.byUrgency.normal, { revenue: 0, transactions: 1 });
 });
 
-test('a phone report books nothing: only a paid job the caller took part in is acknowledged', async () => {
+test('reporting a job the server holds books nothing: only a paid job the caller took part in is acknowledged', async () => {
   const snapshot = (await summary()).json();
+  const invented = { platformFee: 99999, paidAt: minutesAgo(1), urgency: 'emergency' };
 
-  assert.equal((await report(clientToken, 'req-1')).statusCode, 404, 'not a job id');
-  assert.equal((await report(clientToken, randomUUID())).statusCode, 404, 'no such job');
-  assert.equal((await report(strangerToken, paidRequestId)).statusCode, 404, 'not their job');
-  assert.equal((await report(clientToken, paidRequestId)).statusCode, 204, 'the client of a paid job');
-  assert.equal((await report(mechanicToken, paidRequestId)).statusCode, 204, 'the mechanic of a paid job');
+  assert.equal((await report(strangerToken, { requestId: paidRequestId, ...invented })).statusCode, 404, 'not their job');
+  assert.equal(
+    (await report(clientToken, { requestId: unpaidRequestId, platformFee: 0, paidAt: minutesAgo(1) })).statusCode,
+    404,
+    'a server job is paid through /pay, not reported',
+  );
+  assert.equal((await report(clientToken, { requestId: paidRequestId, ...invented })).statusCode, 204, 'the client of a paid job');
+  assert.equal((await report(mechanicToken, { requestId: paidRequestId, ...invented })).statusCode, 204, 'the mechanic of a paid job');
 
   assert.deepEqual((await summary()).json(), snapshot, 'an invented fee moves no figure');
-  const legacy = await ctx.db.queryOne<{ n: number }>('SELECT count(*)::int AS n FROM revenue_ledger');
-  assert.equal(legacy?.n, 0, 'the retired ledger is never written');
+  assert.equal(await ledgerRows(paidRequestId), 0);
+});
+
+test('a device that settles jobs itself still books its payments: once, with the priority fee its urgency carries', async () => {
+  const start = (await summary()).json();
+  const legacy = { requestId: '1726380000000', platformFee: 50, paidAt: minutesAgo(2), urgency: 'urgent' };
+
+  assert.equal((await report(clientToken, legacy)).statusCode, 204);
+  assert.equal((await report(clientToken, legacy)).statusCode, 204, 'a retry is fine');
+  assert.equal(await ledgerRows(legacy.requestId), 1, 'and books nothing twice');
+  const booked = (await summary()).json();
+  assert.equal(booked.priorityFeeRevenue - start.priorityFeeRevenue, 50);
+  assert.equal(booked.priorityFeeCount - start.priorityFeeCount, 1);
+
+  const denied = async () =>
+    (await ctx.db.queryOne<{ n: number }>(`SELECT count(*)::int AS n FROM security_events WHERE event = 'api.validation_rejected'`))?.n ?? 0;
+  const deniedBefore = await denied();
+
+  assert.equal((await report(clientToken, { ...legacy, requestId: 'r-2', platformFee: 99999 })).statusCode, 400, 'an invented fee');
+  assert.equal((await report(clientToken, { ...legacy, requestId: 'r-3', platformFee: 100 })).statusCode, 400, 'an Urgent fee is 50');
+  assert.equal((await denied()) - deniedBefore, 2, 'each wrong fee is logged');
+  assert.equal((await report(mechanicToken, { ...legacy, requestId: 'r-4' })).statusCode, 403, 'the client reports, not the mechanic');
+  assert.equal((await report(clientToken, { ...legacy, requestId: 'r-5', paidAt: minutesAgo(-60) })).statusCode, 400, 'from the future');
+  assert.equal((await report(clientToken, { ...legacy, requestId: 'r-6', paidAt: minutesAgo(8 * 24 * 60) })).statusCode, 400, 'too old');
+  for (const ref of ['r-2', 'r-3', 'r-4', 'r-5', 'r-6']) assert.equal(await ledgerRows(ref), 0, `${ref} booked nothing`);
+
+  assert.equal((await report(clientToken, { requestId: 'r-7', platformFee: 0, paidAt: minutesAgo(1) })).statusCode, 204, 'a Normal job carries no fee');
+});
+
+test('one client books at most 20 device reports a day', async () => {
+  await createUser(ctx.db, { email: 'busy@example.com', password: 'busy client pass', role: 'client' });
+  const token = (await signInAs(ctx.app, 'busy@example.com', 'busy client pass', 'mobile')).accessToken;
+  const normal = (ref: string) => report(token, { requestId: ref, platformFee: 0, paidAt: minutesAgo(1) });
+
+  for (let i = 0; i < 20; i += 1) {
+    assert.equal((await normal(`cap-${i}`)).statusCode, 204, `report ${i}`);
+  }
+  const over = await normal('cap-20');
+  assert.equal(over.statusCode, 429);
+  assert.equal(over.json().error.code, 'rate_limited');
+  assert.equal((await normal('cap-3')).statusCode, 204, 'a retry of a booked report is still fine');
+});
+
+test('with the compatibility window closed, a job the server does not hold is simply not found', async () => {
+  const auth = await authenticateAccessToken(ctx.db, clientToken);
+  await assert.rejects(
+    reportCompletedPayment(
+      ctx.db,
+      auth,
+      { requestId: 'closed-1', platformFee: 0, paidAt: minutesAgo(1) },
+      { legacyReports: false, meta: { ipHash: Buffer.alloc(32), requestId: 'test' } },
+    ),
+    (error: { code?: string }) => error.code === 'not_found',
+  );
+  assert.equal(await ledgerRows('closed-1'), 0);
 });
 
 test('the console cannot report a payment', async () => {
-  const res = await report(adminToken, paidRequestId);
+  const res = await report(adminToken, { requestId: paidRequestId, platformFee: 50, paidAt: minutesAgo(1) });
   assert.equal(res.statusCode, 403);
 });
 

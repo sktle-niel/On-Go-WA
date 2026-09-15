@@ -31,7 +31,7 @@ const MECHANIC_AUDIENCE = ['mechanic'] as const;
 
 /** ONGO's priority fee per urgency, in pesos. Platform revenue, fixed on the
  *  request at creation. */
-const SURCHARGE: Record<UrgencyName, number> = { Normal: 0, Urgent: 50, Emergency: 100 };
+export const SURCHARGE: Record<UrgencyName, number> = { Normal: 0, Urgent: 50, Emergency: 100 };
 
 /** How long an urgency gives the mechanic to COMPLETE, in minutes. A quoted
  *  ETA (time to arrive) must fit inside what is left of it. Normal has no

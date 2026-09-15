@@ -360,6 +360,16 @@ the mobile app's memory to the server, so two devices see the same job.
 **Done when.** A client on one phone and a mechanic on another complete a job
 end to end through the API.
 
+**Compatibility (2026-09-15): the live app's payment reports.** The front end's
+`c04792e` connects the app to the API but still settles jobs on the device and
+reports each payment to `POST /payments`. Rather than hold the deploy or drop
+that revenue, migration 013 and `LEGACY_PAYMENT_REPORTS` let the paying client
+book a device job's report again, checked: the urgency's real fee, a `paidAt`
+from the last week, once per job, 20 a day, refusals logged. Jobs the server
+holds still book only through `/pay`, and the summary reads both without
+counting a job twice. Turn the window off once the app pays through `/pay`.
+4 tests. Release order and SMTP setup: deploy/CLOUD_RUN.md §10 and §11.
+
 **Slice 7 done (2026-09-15): reviews and leaderboard.** No migration: 001 already
 had `reviews` (one per client per mechanic) and `review_likes`. A client creates
 or edits their review of a mechanic (`PUT /mechanics/:id/review`, 1 to 5 stars
