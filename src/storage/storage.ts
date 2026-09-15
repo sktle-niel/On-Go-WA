@@ -24,7 +24,7 @@ import { createHmac } from 'node:crypto';
  *     `public/` prefix are served without a signature.
  */
 
-export type FileKind = 'document' | 'background';
+export type FileKind = 'document' | 'background' | 'chat';
 
 /** Declared content-type is never trusted; the bytes decide. */
 interface Detector {
@@ -115,7 +115,7 @@ export function urlBase(config: AppConfig): string {
 /** A fresh key for a file of `kind`: a uuid under the kind's prefix. Keys are
  *  always made here, never taken from a client. */
 export function keyFor(kind: FileKind, ext: string): string {
-  const prefix = kind === 'background' ? 'public/background' : 'documents';
+  const prefix = kind === 'background' ? 'public/background' : kind === 'chat' ? 'chat' : 'documents';
   return `${prefix}/${newUuid()}.${ext}`;
 }
 

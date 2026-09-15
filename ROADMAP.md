@@ -19,8 +19,8 @@ in PROJECT.md → Known issues.
    the API, and the integration guide is at version 0.2.0. Left: the front-end
    dev merges it, writes the `on_go_api` implementations, and moves the app to
    `/pay` so `LEGACY_PAYMENT_REPORTS` can close.
-3. Step 10 slice 8, chat, on the `chat_messages` table from 001, with images
-   and unread markers.
+3. Step 10 slice 8, chat. Done on `feature/step-10-chat` (2026-09-15, migration
+   014), built on `feature/gcs-storage`; not merged or deployed yet.
 4. Storage that survives a restart: the gcs driver and the staging bucket are
    done (2026-09-15, Step 7); deploying it remains. Job photos and the profile
    photo build on it.
@@ -383,7 +383,7 @@ docx caught up on 2026-09-15 (version 0.2.0).
 
 ---
 
-## Step 10 — The jobs domain `[~]` (in progress; slices 1–7 done by 2026-09-15)
+## Step 10 — The jobs domain `[~]` (slices 1–8 written by 2026-09-15; 1–7 deployed without traffic, 8 on a branch)
 
 **Goal.** Help requests, quotes, ETA, chat, reviews and QR payments move from
 the mobile app's memory to the server, so two devices see the same job.
@@ -398,23 +398,35 @@ the mobile app's memory to the server, so two devices see the same job.
 - [x] Decide what stays client-side (countdown rendering) and what the server
       owns (deadlines from `matchedAt`, ETA caps, cancel lock, expiry sweep,
       priority fees, points awards from `points_policy`).
-- [~] Implement in slices: requests, quotes, accept, the status machine,
-      payments, cancel and expiry, reviews and the leaderboard are done; chat
-      is left.
+- [x] Implement in slices: requests, quotes, accept, the status machine,
+      payments, cancel and expiry, reviews and the leaderboard, and chat.
 - [x] Location: haversine in SQL (Step 10a); PostGIS only if "near me" lists
       grow.
 - [~] Events for every state change. Missing: other mechanics when a job
-      leaves the pool on accept, chat messages, and location updates.
+      leaves the pool on accept, and location updates.
 - [~] Deploy to staging (deploy/CLOUD_RUN.md §10) and move the app onto the
       jobs routes. Revision 00005 and migrations 006–013 are live with no
       traffic (2026-09-15); moving traffic and the app remain.
-- [ ] Slice 8, chat: `chat_messages` (001) already has a body, an image key
-      and a reply-to. It needs send and list routes with paging, an event to
-      the other party, image upload through storage, and a read marker per
-      participant for unread counts (a small migration).
+- [x] Slice 8, chat (2026-09-15, migration 014): paged threads, text and
+      photo messages, replies, read markers and unread counts, and
+      `chat_message.created`.
 
 **Done when.** A client on one phone and a mechanic on another complete a job
 end to end through the API.
+
+**Slice 8 done (2026-09-15): chat.** Migration 014 ties each message to the
+match's mechanic, renames the image column, stamps `sent_at` at the insert,
+caps text at 2000 characters, and adds `chat_reads`. The client and the
+assigned mechanic read a paged thread (`GET /service-requests/:id/chat`), send
+text or a photo (`POST .../chat` and `.../chat/images`; photos go through the
+storage driver and are served by signed link), mark it read
+(`POST .../chat/read`), and list jobs with unread messages
+(`GET /chat/unread`). Anyone else gets 404 and console roles 403. Sending needs
+a matched job; a paid job's chat stays readable and closed. A job back in the
+pool starts a new conversation, and the previous mechanic loses access. Read
+markers are compared in SQL, because a JavaScript date drops the microseconds.
+`chat_message.created` goes to both parties. 8 tests. The branch is built on
+`feature/gcs-storage`.
 
 **Release (2026-09-15).** Pull request #3 put slices 1–7 and Step 10a on
 `main`. Revision `ongo-api-00005` was deployed from `feature/step-10-jobs`,

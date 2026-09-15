@@ -1,6 +1,7 @@
 import type { FastifyPluginAsyncTypebox } from '@fastify/type-provider-typebox';
 import { appearanceRoutes } from './appearance.js';
 import { authRoutes } from './auth.js';
+import { chatRoutes } from './chat.js';
 import { eventRoutes } from './events.js';
 import { filesRoutes } from './files.js';
 import { jobRoutes } from './jobs.js';
@@ -27,4 +28,5 @@ export const v1Routes: FastifyPluginAsyncTypebox = async (app) => {
   await app.register(jobRoutes);
   await app.register(locationRoutes);
   await app.register(reviewRoutes);
+  await app.register(chatRoutes);
 };
