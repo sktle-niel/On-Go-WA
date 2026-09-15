@@ -81,6 +81,7 @@ migrations/            forward-only SQL, one transaction per file, recorded in s
   009_job_progress.sql            navigating/en_route/arrived/work_started/service_completed + timestamps
   010_payments_points.sql         agreed amount, server-settled payments, points_ledger; revenue_ledger retired
   011_cancel_expiry.sql           deadline backfill + the index the expiry sweep reads
+  012_locations.sql               user_locations, ongo_great_circle_m; repairs (0,0) booking coordinates
 scripts/               migrate, seed-admin, gen-secrets, export-openapi
 src/
   index.ts             entry: loads remote secrets, then imports bootstrap
@@ -106,15 +107,15 @@ src/
   storage/*.ts         Storage interface, disk driver, magic-byte validation, signed/public URL signing
   utils/uploads.ts     multipart file validation (magic bytes, size), used by the upload routes
   schemas/*.ts         TypeBox schemas mirroring on_go_shared DTOs (+ verification, moderators, jobs)
-  services/*.ts        auth, points, revenue, verification, moderators, jobs (functions over Queryable)
+  services/*.ts        auth, points, revenue, verification, moderators, jobs, locations (functions over Queryable)
   routes/health.ts     /health/live, /health/ready
   routes/v1/*.ts       one file per domain (auth, verification, moderators, revenue, appearance,
-                       points, events, files, jobs), registered under /api/v1
+                       points, events, files, jobs, locations), registered under /api/v1
 test/
   helpers/             env, PGlite database, app factory, createUser/signInAs
   unit/                config, tokens, errors
   integration/         migrations, health, auth, points, revenue, stubs, events, verification,
-                       moderators, storage, delivery, jobs, quotes, accept, status, payments, cancel
+                       moderators, storage, delivery, jobs, quotes, accept, status, payments, cancel, locations
 Dockerfile             multi-stage, non-root, healthcheck; CMD node dist/src/index.js
 docker-compose.yml     postgres (default), redis (profile), api (profile full)
 .env.example           every setting, with comments
@@ -186,8 +187,15 @@ deploy/CLOUD_RUN.md    step-by-step trial deployment: Cloud Run + Neon + Secret 
   starts; the mechanic cancels before any progress step; an overdue job not
   under way returns to the pool, swept before every jobs route and on a
   timer). Events `service_request.created`/`.updated`, `quote.submitted`/
-  `.updated`, `payment.completed`. Remaining slices: locations, reviews +
-  leaderboard, chat.
+  `.updated`, `payment.completed`. Remaining slices: reviews + leaderboard,
+  chat.
+- Locations (Step 10a, migration 012): `POST /locations` keeps each account's
+  latest fix (the token holder is the subject; role must be the caller's own;
+  availability for mechanics only); `GET /users/:userId/location` for the owner,
+  the console, or the other party of a matched job, 404 otherwise; and
+  `GET /mechanics/:mechanicId/nearby-jobs` implementing
+  `isJobWithinServiceRadius` with `ongo_great_circle_m`, the haversine of
+  `GeoPoint.distanceTo`, nearest first.
 - Open-pool fix (2026-09-15): `GET /service-requests?scope=open` answers 403 to
   clients and records `authz.denied`; mechanics and console roles still read it.
   Before, any signed-in client could list every pending request with the other
@@ -195,7 +203,7 @@ deploy/CLOUD_RUN.md    step-by-step trial deployment: Cloud Run + Neon + Secret 
 - Security plugins, docs, health routes.
 - Scripts: migrate, seed-admin, gen-secrets, export-openapi.
 - Dockerfile, docker-compose.yml, .env.example.
-- Test suite (20 files, 125 tests) on PGlite.
+- Test suite (21 files, 132 tests) on PGlite.
 
 ### Implemented since the last hosting snapshot
 
@@ -206,8 +214,8 @@ In background — (Step 7) are all live. Nothing answers `501` anymore.
 ### Verified (2026-09-11)
 
 - `npm run typecheck` clean (TypeScript 7.0.2).
-- `npm test` clean: 125 tests on PGlite 0.5.8 (PostgreSQL 18.3 in WebAssembly),
-  re-verified 2026-09-15. Migrations 001–011 apply there unchanged, including
+- `npm test` clean: 132 tests on PGlite 0.5.8 (PostgreSQL 18.3 in WebAssembly),
+  re-verified 2026-09-15. Migrations 001–012 apply there unchanged, including
   `CREATE ROLE`, partial unique indexes, `AT TIME ZONE 'Asia/Manila'` and bytea
   parameters.
 - Schema files import `Type` from `@fastify/type-provider-typebox`, which
@@ -267,9 +275,13 @@ real deployment needs a GCS driver (see `deploy/CLOUD_RUN.md` §9).
   reported, until this branch is deployed with migrations 010–011.
 - The "mechanic is running late" notice is not server-side; the app derives it
   from `expectedArrivalAt`.
+- `LocationApi` has no watch method, so a client following their mechanic polls
+  `GET /users/:userId/location`; no location event is published.
 - Fixed by slices 5–6 (2026-09-15): the trusted revenue route, finished jobs
   that never closed, the Emergency accept record's placeholder price, and
-  matched jobs that could neither be cancelled nor expire.
+  matched jobs that could neither be cancelled nor expire. Fixed with Step 10a:
+  nullable request fields were coerced by the validator (null became 0, '' or
+  false), so a booking's null coordinates were stored as 0,0.
 
 ## Routes (all under `/api/v1`)
 
@@ -301,9 +313,9 @@ real deployment needs a GCS driver (see `deploy/CLOUD_RUN.md` §9).
 | GET | /files/* | (addition) serve a stored file | public (`public/`) or a valid signed URL | live |
 | GET | /platform/points-policy | PointsPolicyApi.fetch | public | live |
 | PUT | /platform/points-policy | PointsPolicyApi.update | admin | live |
-| POST | /locations | LocationApi.reportLocation | bearer | not registered (Step 10a) |
-| GET | /users/:userId/location | LocationApi.fetchLastKnown | owner, console | not registered (Step 10a) |
-| GET | /mechanics/:mechanicId/nearby-jobs | LocationApi.findNearbyJobIds | mechanic (self), console | not registered (Step 10a) |
+| POST | /locations | LocationApi.reportLocation | client, mechanic; the token holder is the subject | live |
+| GET | /users/:userId/location | LocationApi.fetchLastKnown | owner, console, or the other party of a matched job; 404 otherwise | live |
+| GET | /mechanics/:mechanicId/nearby-jobs | LocationApi.findNearbyJobIds | the mechanic themself, console | live |
 | POST | /service-requests | (addition) book a request | client | live |
 | GET | /service-requests | (addition) list open / mine | bearer; `scope=open` mechanic or console only (client 403) | live |
 | GET | /service-requests/:id | (addition) one request | owner / mechanic / console | live |
@@ -354,13 +366,16 @@ real deployment needs a GCS driver (see `deploy/CLOUD_RUN.md` §9).
    carries `error.details.cancellableAt`, and every request carries
    `deadlineAt` and `expectedArrivalAt`, so the app's countdowns read the
    server's clock. The app's own expiry sweep and cancel rules can go. Still to
-   come: locations, reviews/leaderboard, chat.
-9. **`LocationApi` (added to `on_go_shared` upstream on 2026-09-13) is not served
-   yet:** `POST /locations`, `GET /users/:userId/location`,
-   `GET /mechanics/:mechanicId/nearby-jobs?radiusKm=`. Models `GeoPoint`,
-   `LocationUpdate` (`source`, `role`, `availability` travel as Dart enum
-   names) and `Place`. Planned as ROADMAP Step 10a. The routes are not
-   registered, so they answer 404 today, not 501.
+   come: reviews/leaderboard, chat.
+9. **`LocationApi` is served (Step 10a, 2026-09-15):** `POST /locations`,
+   `GET /users/:userId/location`, `GET /mechanics/:mechanicId/nearby-jobs?radiusKm=`.
+   `source`, `role` and `availability` travel as Dart enum names. For the Dart
+   side: `reportLocation` answers 204 and may leave `userId` null, because the
+   token says who; `fetchLastKnown` answers 404 for any location the caller may
+   not see or that does not exist, which maps to null; `findNearbyJobIds`
+   returns pending job ids, nearest first. The app has no service-radius
+   setting yet, so the caller picks `radiusKm`. `Place` is not stored: bookings
+   still carry only `location` text and coordinates.
 10. **`PlatformRevenueApi.reportCompletedPayment` no longer books revenue**
    (slice 5). The server settles the payment when the client calls
    `POST /service-requests/:id/pay`; `POST /payments` answers 204 only for a
