@@ -21,8 +21,9 @@ in PROJECT.md → Known issues.
    `/pay` so `LEGACY_PAYMENT_REPORTS` can close.
 3. Step 10 slice 8, chat, on the `chat_messages` table from 001, with images
    and unread markers.
-4. Storage that survives a restart (a GCS driver, Step 7), then job photos and
-   the profile photo on top of it.
+4. Storage that survives a restart: the gcs driver and the staging bucket are
+   done (2026-09-15, Step 7); deploying it remains. Job photos and the profile
+   photo build on it.
 5. Account profile routes: name, phone, address and photo.
 6. Operations (Step 9): Redis before a second instance, per-account rate
    limits, the retention job, running as `ongo_app`, alerts.
@@ -240,17 +241,18 @@ queue decisions, so the log is one merged stream. Mutations publish
 out on the next request and the merged audit log. The display role label is
 always "Moderator" (no column persists a custom label).
 
-## Step 7 — Object storage `[~]` (disk driver done 2026-09-14; cloud driver pending)
+## Step 7 — Object storage `[~]` (disk driver 2026-09-14; gcs driver 2026-09-15, not deployed yet)
 
 **Goal.** Files (credential documents, the Sign In background) have a home.
 
 **Tasks.**
 - [x] `storage/` abstraction: `put`, `delete`, `signedUrl`, with a local-disk
       implementation for dev, tests and a single-instance demo.
-- [ ] A cloud implementation for deployment. Planned as S3; on Cloud Run a
-      Google Cloud Storage driver fits better, because the service account
-      reaches a private bucket without keys. `STORAGE_DRIVER` accepts only
-      `disk` today.
+- [x] A cloud implementation for deployment (2026-09-15): `STORAGE_DRIVER=gcs`
+      keeps files in a private Cloud Storage bucket through the JSON API, with
+      the service account's metadata-server token; no client library and no
+      key file. The staging bucket `gs://ongo-staging-2026-uploads` exists.
+- [ ] Deploy with `STORAGE_DRIVER=gcs` (deploy/CLOUD_RUN.md §12).
 - [x] `@fastify/multipart` with size and MIME limits (images and PDF for
       documents; JPEG/PNG/WebP ≤ 5 MB for the background).
 - [x] Document upload route attached to a verification request; rows in

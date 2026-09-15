@@ -131,9 +131,13 @@ const schema = z
     LOAD_SHED_MAX_EVENT_LOOP_UTILIZATION: z.coerce.number().min(0).max(1).default(0.98),
 
     // ── Object storage ───────────────────────────────────────────────────────
-    /** Where uploaded files live. `disk` is for dev/tests and a single-instance
-     *  demo; a cloud driver (GCS/S3) is swapped in for real deployments. */
-    STORAGE_DRIVER: z.enum(['disk']).default('disk'),
+    /** Where uploaded files live. `disk` is for dev, tests and a single-instance
+     *  demo. `gcs` keeps them in a private Cloud Storage bucket, reached with the
+     *  runtime service account, so they survive restarts and new revisions. */
+    STORAGE_DRIVER: z.enum(['disk', 'gcs']).default('disk'),
+    /** The bucket the gcs driver uses; required with it. Keep it private: the
+     *  API serves every file itself. */
+    GCS_BUCKET: z.string().regex(/^[a-z0-9][a-z0-9._-]{1,220}[a-z0-9]$/).optional(),
     /** Directory the disk driver writes to (relative to the working dir). */
     UPLOAD_DIR: z.string().min(1).default('uploads'),
     /** How long a signed link to a private document stays valid. */
@@ -182,6 +186,9 @@ const schema = z
       if (!env.SMTP_USER) fail('SMTP_USER', 'required when DELIVERY_DRIVER=smtp');
       if (!env.SMTP_PASSWORD) fail('SMTP_PASSWORD', 'required when DELIVERY_DRIVER=smtp');
       if (!env.SMTP_FROM) fail('SMTP_FROM', 'required when DELIVERY_DRIVER=smtp');
+    }
+    if (env.STORAGE_DRIVER === 'gcs' && !env.GCS_BUCKET) {
+      fail('GCS_BUCKET', 'required when STORAGE_DRIVER=gcs');
     }
 
     if (env.NODE_ENV !== 'production') return;

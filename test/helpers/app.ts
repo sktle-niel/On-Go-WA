@@ -3,9 +3,10 @@ import { buildApp, type App } from '../../src/app.js';
 import { hashPassword, initPasswordHashing } from '../../src/auth/password.js';
 import type { TokenRole } from '../../src/auth/tokens.js';
 import { insertUser, type UserRow } from '../../src/auth/users.js';
-import { loadConfig } from '../../src/config/env.js';
+import { loadConfig, type AppConfig } from '../../src/config/env.js';
 import type { Database } from '../../src/db/database.js';
 import { createMemoryBus, type EventBus } from '../../src/events/bus.js';
+import type { Storage } from '../../src/storage/storage.js';
 import { createTestDatabase } from './db.js';
 import { createMemoryStorage } from './storage.js';
 
@@ -18,7 +19,8 @@ export interface TestContext {
   close(): Promise<void>;
 }
 
-export async function createTestApp(): Promise<TestContext> {
+/** `storage` swaps the in-memory store for another driver, e.g. gcs against a fake Google. */
+export async function createTestApp(options: { storage?: (config: AppConfig) => Storage } = {}): Promise<TestContext> {
   const config = loadConfig();
   await initPasswordHashing();
   const db = await createTestDatabase();
@@ -29,7 +31,7 @@ export async function createTestApp(): Promise<TestContext> {
     config,
     db,
     events,
-    storage: createMemoryStorage(config),
+    storage: options.storage ? options.storage(config) : createMemoryStorage(config),
     codeDelivery: {
       async deliverPasswordResetCode({ email, code }) {
         resetCodes.push({ email, code });

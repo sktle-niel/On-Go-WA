@@ -205,13 +205,8 @@ Cloud Logging alerts, e.g. on `auth.token.reuse_detected`.
   SQL connector, or Neon's paid tier).
 - **Object storage.** The `disk` driver writes to the container filesystem,
   which on Cloud Run is EPHEMERAL: uploaded documents and the Sign In
-  background are lost on every new revision, restart or scaled instance. It is
-  fine to demonstrate the upload flow on a single instance, but before anyone
-  relies on it, swap in a cloud driver — Google Cloud Storage is the natural
-  fit here (the Cloud Run service account can access a bucket with no extra
-  credentials). The `Storage` interface does not change; only `createStorage`
-  gains a `gcs` branch, plus a bucket name in the environment. Until then, do
-  not tell mechanics their uploaded IDs are safely stored.
+  background are lost on every new revision, restart or scaled instance. Use
+  the `gcs` driver on any deployment people rely on (section 12).
 - Alerting on readiness failures, 5xx rate and `auth.token.reuse_detected`.
 - Connect as `ongo_app` instead of the Neon owner, so the grants in
   migrations 002–013 apply: give the role a login and a password from a new
@@ -289,3 +284,38 @@ sent and the log records that. To deliver real email:
 4. Request a reset for an account you own and check its inbox. A send failure
    is logged as `password reset email failed to send` and never shown to the
    caller, whose answer is always 202.
+
+## 12. Uploads that survive a restart (Cloud Storage)
+
+The `gcs` driver keeps uploaded documents and the Sign In background in a
+private bucket. The API still serves every file itself through
+`/api/v1/files/*` with its own signed links, so the bucket is never public and
+no key file or Google signed URL is involved. The driver authenticates with
+the Cloud Run service account's short-lived token from the metadata server.
+
+1. The staging bucket exists since 2026-09-15: `gs://ongo-staging-2026-uploads`
+   in Singapore, uniform access, public access prevention enforced, soft delete
+   7 days, and object access for the compute service account only. To create
+   one elsewhere:
+   ```bash
+   gcloud storage buckets create gs://<bucket name> --location asia-southeast1 \
+     --uniform-bucket-level-access --public-access-prevention
+   gcloud storage buckets add-iam-policy-binding gs://<bucket name> \
+     --member="serviceAccount:$SA" --role=roles/storage.objectUser
+   ```
+2. Deploy with the driver switched on:
+   ```bash
+   gcloud run deploy ongo-api --source . --region asia-southeast1 \
+     --no-traffic --tag candidate \
+     --update-env-vars STORAGE_DRIVER=gcs,GCS_BUCKET=ongo-staging-2026-uploads
+   ```
+   The service refuses to start with `STORAGE_DRIVER=gcs` and no bucket.
+   `UPLOAD_DIR` is then unused.
+3. Check it on the tagged URL: publish a Sign In background from the console,
+   open the URL it returns, and list the object with
+   `gcloud storage ls gs://ongo-staging-2026-uploads/public/background/`. Then
+   move traffic as in section 10.
+
+Files uploaded while `disk` was in use lived on a container disk and are gone;
+opening them answers `404`, and mechanics upload those documents again. A
+production instance still on `disk` logs a warning at startup.

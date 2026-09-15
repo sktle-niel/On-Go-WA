@@ -1,6 +1,7 @@
 import type { AppConfig } from '../config/env.js';
 import { createDiskStorage } from './disk.js';
-import { safeEqual, sha256 } from '../utils/crypto.js';
+import { createGcsStorage } from './gcs.js';
+import { newUuid, safeEqual, sha256 } from '../utils/crypto.js';
 import { createHmac } from 'node:crypto';
 
 /**
@@ -8,9 +9,11 @@ import { createHmac } from 'node:crypto';
  * to one.
  *
  * The interface is small on purpose so a disk implementation can back it in
- * development and tests while a cloud implementation (GCS on Cloud Run, or S3)
- * backs it in production — the routes and services never learn which. Today
- * only the disk driver exists; `createStorage` is where another is added.
+ * development and tests while a cloud implementation backs it in a deployment,
+ * and the routes and services never learn which. `disk` writes to the local
+ * filesystem; `gcs` keeps files in a private Cloud Storage bucket (gcs.ts).
+ * Either way the API serves the bytes itself, through the links below, so a
+ * bucket is never exposed to a client.
  *
  * Two url shapes:
  *   - `signedUrl` is for PRIVATE files (credential documents). It carries an
@@ -109,10 +112,37 @@ export function urlBase(config: AppConfig): string {
   return config.PUBLIC_BASE_URL ? config.PUBLIC_BASE_URL.replace(/\/$/, '') : '';
 }
 
+/** A fresh key for a file of `kind`: a uuid under the kind's prefix. Keys are
+ *  always made here, never taken from a client. */
+export function keyFor(kind: FileKind, ext: string): string {
+  const prefix = kind === 'background' ? 'public/background' : 'documents';
+  return `${prefix}/${newUuid()}.${ext}`;
+}
+
+/** The links every driver hands out. The bytes live wherever the driver keeps
+ *  them; `GET /api/v1/files/*` serves them after checking the link. */
+export function apiFileUrls(config: AppConfig): Pick<Storage, 'signedUrl' | 'publicUrl'> {
+  const base = urlBase(config);
+  return {
+    signedUrl(key: string, ttlSeconds: number): string {
+      const exp = Math.floor(Date.now() / 1000) + ttlSeconds;
+      const sig = signKey(config.JWT_SIGNING_KEY, key, exp);
+      return `${base}/api/v1/files/${key}?exp=${exp}&sig=${sig}`;
+    },
+    publicUrl(key: string): string {
+      if (!isPublicKey(key)) throw new Error('publicUrl called for a non-public key');
+      return `${base}/api/v1/files/${key}`;
+    },
+  };
+}
+
 export { extToType, sha256 };
 
 export function createStorage(config: AppConfig): Storage {
   switch (config.STORAGE_DRIVER) {
+    case 'gcs':
+      // Config validation guarantees the bucket whenever this driver is chosen.
+      return createGcsStorage(config, { bucket: config.GCS_BUCKET ?? '' });
     case 'disk':
     default:
       return createDiskStorage(config);
