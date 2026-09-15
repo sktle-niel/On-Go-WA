@@ -83,7 +83,8 @@ migrations/            forward-only SQL, one transaction per file, recorded in s
   011_cancel_expiry.sql           deadline backfill + the index the expiry sweep reads
   012_locations.sql               user_locations, ongo_great_circle_m; repairs (0,0) booking coordinates
   013_legacy_payment_reports.sql  revenue_ledger takes checked device payment reports again
-scripts/               migrate, seed-admin, gen-secrets, export-openapi
+scripts/               migrate, seed-admin, gen-secrets, export-openapi,
+                       check-secrets, setup-hooks, test-annotations
 src/
   index.ts             entry: loads remote secrets, then imports bootstrap
   bootstrap.ts         wires config, db, redis, events; listens; graceful shutdown
@@ -121,7 +122,11 @@ Dockerfile             multi-stage, non-root, healthcheck; CMD node dist/src/ind
 docker-compose.yml     postgres (default), redis (profile), api (profile full)
 .env.example           every setting, with comments
 .gcloudignore          what `gcloud run deploy --source .` uploads
-deploy/CLOUD_RUN.md    step-by-step trial deployment: Cloud Run + Neon + Secret Manager
+deploy/CLOUD_RUN.md    step-by-step trial deployment: Cloud Run + Neon + Secret Manager;
+                       releasing the jobs domain (§10) and SMTP (§11)
+.githooks/             pre-commit secret scan, pre-push verify
+.github/workflows/     CI: typecheck, tests, build, audit, secret scans
+SECURITY.md            where secrets live, the checks, the service's security layers
 ```
 
 ## Status
@@ -212,13 +217,18 @@ deploy/CLOUD_RUN.md    step-by-step trial deployment: Cloud Run + Neon + Secret 
 - Dockerfile, docker-compose.yml, .env.example.
 - Test suite (22 files, 141 tests) on PGlite.
 
-### Implemented since the last hosting snapshot
+### Where each piece runs (checked 2026-09-15)
 
-Every contract endpoint now returns real data. Verification (Step 5), the
-moderator directory (Step 6), and object storage — document upload and the Sign
-In background — (Step 7) are all live. Nothing answers `501` anymore.
+| Where | What it serves | Migrations | `/docs/json` |
+| --- | --- | --- | --- |
+| Staging, revision `ongo-api-00004` (= `main`) | Steps 1–8: auth, verification, moderators, storage, reset codes, points policy, revenue, appearance | 001–005 | 24 paths |
+| Branch `feature/step-10-jobs` (pushed; pull request into `development` not opened yet) | the above, plus Step 10 slices 1–7, Step 10a locations and the payment-report compatibility window | 001–013 | 50 paths |
 
-### Verified (2026-09-11)
+Every contract endpoint returns real data; nothing answers `501`. `development`
+is behind `main` by the Steps 5–8 merge, so the jobs pull request also brings it
+level. Releasing the branch: deploy/CLOUD_RUN.md §10.
+
+### Verified (2026-09-11, re-checked 2026-09-15)
 
 - `npm run typecheck` clean (TypeScript 7.0.2).
 - `npm test` clean: 141 tests on PGlite 0.5.8 (PostgreSQL 18.3 in WebAssembly),
@@ -231,8 +241,8 @@ In background — (Step 7) are all live. Nothing answers `501` anymore.
   provider.
 
 - `npm run build` clean; the built server boots without a database and
-  answers `/health/live` 200, `/health/ready` 503, `/docs/json` (24 paths as
-  of Step 7) and the 404 envelope.
+  answers `/health/live` 200, `/health/ready` 503, `/docs/json` and the 404
+  envelope. `npm run openapi` on 2026-09-15 wrote 50 paths.
 
 ### Deployed (2026-09-14, staging)
 
@@ -255,6 +265,9 @@ In background — (Step 7) are all live. Nothing answers `501` anymore.
   GET `/moderators`, `/verification-requests`, `/audit-log`, `/platform/appearance`
   all 200; and a full appearance upload round trip (PUT → served bytes match →
   DELETE) confirming storage writes work on Cloud Run.
+- Re-checked 2026-09-15, read-only: still revision `ongo-api-00004` with
+  `maxScale=2` and no Redis; `/docs/json` lists 24 paths, with no jobs or
+  location routes.
 
 **Ephemeral storage caveat:** uploaded documents and the background live on the
 container's `/tmp`, lost on every revision/restart/scale. Fine for a demo; a
@@ -270,11 +283,35 @@ real deployment needs a GCS driver (see `deploy/CLOUD_RUN.md` §9).
 
 ### Not yet verified
 
-- The Redis code path (no Redis locally).
+- The Redis code path (no Redis locally, and no test covers it).
+- Migrations 006–013 on Neon. PGlite runs them as a superuser, so whether the
+  Neon owner may run every grant in them shows only on the first real run.
+- The jobs flow on two real phones: the app does not call the jobs routes yet.
+- The background expiry timer on Cloud Run, where an idle service has no
+  instance running; the sweep before every jobs route covers that.
 - README.md is not written (Step 4).
 
-### Known issues (confirmed 2026-09-15, owned by later slices)
+### Known issues (confirmed 2026-09-15)
 
+- **Two instances, no Redis.** Staging allows two instances (`maxScale=2`)
+  without `REDIS_URL`. Events are delivered in memory, so a phone whose socket
+  sits on the other instance misses them, and each instance keeps its own
+  rate-limit counters. Steps 5–8 events are already exposed to this; the jobs
+  release depends on both phones hearing each change, so it ships with one
+  instance until Redis exists (deploy/CLOUD_RUN.md §10).
+- **Rate limits are keyed by IP address.** Mobile carriers put many phones
+  behind one address, so users on one carrier could share the 300 a minute.
+  Signed-in traffic should be counted per account.
+- **Nothing prunes old rows.** `login_attempts`, `security_events` and spent
+  `password_reset_codes` grow without limit (Step 9 retention job).
+- **App features with no server home yet.** Chat (text, an image, a reply-to,
+  unread counts), the photos attached to a job, profile edits and the profile
+  photo (`users.photo_url` has no route), the matched mechanic's phone number
+  (stored at registration, never served), and notices while the app is closed
+  (no push provider).
+- **Stale comments.** The headers of `src/routes/v1/jobs.ts` and
+  `src/services/jobs.service.ts` still describe slice 1, and `src/context.ts`
+  says there is no mail provider.
 - After an accept, `service_request.updated` reaches only the two parties, so
   other mechanics' open pools go stale until they refetch. A job returning to
   the pool is announced to every mechanic since slice 6.
@@ -426,6 +463,13 @@ real deployment needs a GCS driver (see `deploy/CLOUD_RUN.md` §9).
    `documentNames`; `POST /verification-requests/:id/documents` is not wired.
    The location routes the app lists as "not in the contract" match the
    server's and are served from the jobs branch.
+13. **The app's mechanic notices map onto events the server already sends,**
+   but only while the app holds the socket open: `quoteAccepted` and
+   `paymentReceived` are `service_request.updated`, `quoteRejected` is
+   `quote.updated`, `rated` is `review.submitted`, `emergencyPosted` is
+   `service_request.created` (sent to every mechanic), and `accountApproved` is
+   `verification_request.updated`. A closed app hears nothing until a push
+   provider is chosen.
 
 ## Rules
 
@@ -471,8 +515,10 @@ real deployment needs a GCS driver (see `deploy/CLOUD_RUN.md` §9).
   requests whether or not the email exists.
 - Production config refuses wildcard/plaintext CORS, non-verify-full
   database TLS, and access tokens over 15 minutes.
-- The API connects as `ongo_app`, never the master user. The migrator runs
-  DDL at deploy time only.
+- The API should connect as `ongo_app`, never the master user, and the
+  migrator runs DDL at deploy time only. Staging does not yet: it connects as
+  the Neon owner (Step 3 hardening), so the grants in 002–013 do not protect
+  it today.
 - Security-relevant diffs (auth, sessions, guards, SQL grants, crypto) get a
   top-model review before merge.
 - **Every commit and push is checked.** `.githooks/pre-commit` runs the secret
@@ -531,8 +577,8 @@ Verified 2026-09-11 and to be kept true:
   development-tool or model-vendor names in committed files.
 - **Before every commit and push:** read the diff for anything secret-like,
   run `npm run verify`, and let the hooks run. Never `--no-verify`.
-- **No subagents or multi-agent workflows without the user's approval.**
-  Work solo with Read/Grep/Bash unless a fan-out is explicitly approved.
+- **No subagents or multi-agent workflows.** The owner asked on 2026-09-15
+  for manual checks only: read, search and verify directly.
 - **Save tokens.** Lean replies, one feature per session, `/compact` when the
   context grows. Use a mid-tier model for routine implementation and a small model for
   mechanical edits; use a top-tier model for auth, permissions, SQL grants,
@@ -571,14 +617,21 @@ Verified 2026-09-11 and to be kept true:
 - Git repository since 2026-09-14; remote `origin` is
   `https://github.com/sktle-niel/On-Go-WA.git`, branch `main`. Commits carry
   only the owner's identity (no co-author or tool trailers). Working branch:
-  `development`; `main` is what is deployed.
+  `development`; `main` is what is deployed. Step 10 lives on
+  `feature/step-10-jobs` (pushed 2026-09-15); its pull request into
+  `development` is still to be opened on GitHub. The `gh` CLI is not installed.
 - The front-end repo `https://github.com/sktle-niel/On-Go.git` is cloned at
   `../On-Go` on branch `master`, synced 2026-09-15 to `c04792e` ("connect mobile
   app to On Go API"). The pre-sync local edits, an early `RemoteAuthService` now
   superseded by `packages/on_go_api`, are kept in `git stash` there; the older
-  local-only branch `local-snapshot` keeps the 2026-09-14 copy. The admin
-  console moved upstream to a separate `on_go_console` repository that is not
-  on this machine.
+  local-only branch `local-snapshot` keeps the 2026-09-14 copy. A `git fetch`
+  on 2026-09-15 found nothing newer than `c04792e`. The admin console moved
+  upstream to a separate `on_go_console` repository that is not on this
+  machine.
+- The integration guide for the front-end dev lives outside this repository,
+  in `../On Go Documentation` (`API-Integration-Guide.md`, its `.docx` and an
+  `openapi.json`). Last updated 2026-09-14, it predates Step 10 and 10a and
+  still describes the old `POST /payments`.
 
 ## Commands
 

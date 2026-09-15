@@ -5,6 +5,28 @@ the model that fits. Tick the boxes as they land and update PROJECT.md.
 
 Status legend: `[ ]` not started · `[~]` in progress · `[x]` done
 
+**Order from here (planned 2026-09-15).** Details are in the steps below and
+in PROJECT.md → Known issues.
+
+1. Release Step 10 as it stands: open the pull request into `development`,
+   merge to `main`, deploy with one instance and run migrations 006–013
+   (deploy/CLOUD_RUN.md §10). Configure SMTP (§11).
+2. Hand the jobs contract to the front-end dev: add jobs, wallet, reviews and
+   locations to `on_go_shared`, refresh the integration guide, and move the app
+   to `/pay` so `LEGACY_PAYMENT_REPORTS` can close.
+3. Step 10 slice 8, chat, on the `chat_messages` table from 001, with images
+   and unread markers.
+4. Storage that survives a restart (a GCS driver, Step 7), then job photos and
+   the profile photo on top of it.
+5. Account profile routes: name, phone, address and photo.
+6. Operations (Step 9): Redis before a second instance, per-account rate
+   limits, the retention job, running as `ongo_app`, alerts.
+7. Smaller follow-ups: tell other mechanics when a job leaves the pool, review
+   paging and console removal, a live location event, the late-arrival notice,
+   the stale slice-1 comments in the jobs code, the Fastify deprecation of
+   `disableRequestLogging` (FSTDEP023, moves to `logController`), the README
+   (Step 4).
+
 ---
 
 ## Step 1 — Green typecheck and tests `[x]` (done 2026-09-11)
@@ -54,8 +76,8 @@ Status legend: `[ ]` not started · `[~]` in progress · `[x]` done
 - [x] `node dist/src/index.js` boots without a database: `/health/live` 200,
       `/health/ready` 503 `degraded`, `/docs/json` lists 23 paths, unknown
       routes return the error envelope.
-- [ ] `npm run openapi` writes `openapi/openapi.json` (run when the front-end
-      dev needs the file).
+- [x] `npm run openapi` writes `openapi/openapi.json` (last run 2026-09-15:
+      50 paths, handed over with the jobs notes).
 - [~] Docker image: no Docker on this machine. Cloud Build builds the same
       Dockerfile during the first `gcloud run deploy` (Step 3).
 
@@ -104,7 +126,8 @@ reachable at a public URL. Follow `deploy/CLOUD_RUN.md`.
 
 **Done when.** The front-end developer can sign in against the public URL and
 read `/docs`.
-n**Result (2026-09-14).** Service URL
+
+**Result (2026-09-14).** Service URL
 `https://ongo-api-618821603306.asia-southeast1.run.app`, revision
 `ongo-api-00001`. `/health/ready` reports `database: up`; the seeded admin
 signs in from `/docs` (console surface, refresh cookie set) and authenticates
@@ -117,7 +140,7 @@ not a superuser.
 
 ---
 
-## Step 4 — README for the front-end developer `[~]` (API hand-off done via the integration guide; repo quick-start README pending)
+## Step 4 — README for the front-end developer `[~]` (integration guide written 2026-09-14 outside the repo, now behind Step 10; quick-start README pending)
 
 **Goal.** Someone who has never seen this repo can run it and integrate.
 
@@ -132,6 +155,9 @@ not a superuser.
       the Dart side.
 - [ ] Deployment reference: ECS Fargate or App Runner, RDS, ElastiCache, S3,
       Secrets Manager, ALB + WAF, CloudWatch.
+- [ ] Bring `../On Go Documentation/API-Integration-Guide.md` and its docx up
+      to date with Step 10 and 10a: jobs, pay, wallet, reviews, locations, the
+      compatibility window and the new events.
 
 **Done when.** The front-end dev can point the Flutter apps at the API without
 asking questions in chat.
@@ -209,14 +235,17 @@ queue decisions, so the log is one merged stream. Mutations publish
 out on the next request and the merged audit log. The display role label is
 always "Moderator" (no column persists a custom label).
 
-## Step 7 — Object storage `[x]` (done 2026-09-14, disk driver; cloud driver at deploy)
+## Step 7 — Object storage `[~]` (disk driver done 2026-09-14; cloud driver pending)
 
 **Goal.** Files (credential documents, the Sign In background) have a home.
 
 **Tasks.**
-- [x] `storage/` abstraction: `put`, `delete`, `signedUrl`. Local-disk
-      implementation for dev/tests, S3 implementation for deployment
-      (`@aws-sdk/client-s3`, presigned GET URLs, bucket private).
+- [x] `storage/` abstraction: `put`, `delete`, `signedUrl`, with a local-disk
+      implementation for dev, tests and a single-instance demo.
+- [ ] A cloud implementation for deployment. Planned as S3; on Cloud Run a
+      Google Cloud Storage driver fits better, because the service account
+      reaches a private bucket without keys. `STORAGE_DRIVER` accepts only
+      `disk` today.
 - [x] `@fastify/multipart` with size and MIME limits (images and PDF for
       documents; JPEG/PNG/WebP ≤ 5 MB for the background).
 - [x] Document upload route attached to a verification request; rows in
@@ -266,7 +295,7 @@ email content is a pure, tested template. Reset requests are capped per email
 stays a future driver behind the same interface (needs a gateway choice, e.g.
 a PH SMS provider). Config `DELIVERY_DRIVER=smtp` requires the SMTP_* values.
 
-## Step 9 — CI and deployment `[ ]`
+## Step 9 — CI and deployment `[~]`
 
 **Goal.** Every change is checked, and a tagged build reaches a server.
 
@@ -282,7 +311,15 @@ a PH SMS provider). Config `DELIVERY_DRIVER=smtp` requires the SMTP_* values.
       5xx rate and readiness failures.
 - [ ] Migrations as a deploy step (`node dist/scripts/migrate.js` as the
       migrator role) before the new task set goes live.
-- [ ] Retention job for `login_attempts` and `security_events`.
+- [ ] Retention job for `login_attempts`, `security_events` and spent
+      `password_reset_codes`.
+- [ ] Redis (`REDIS_URL`) before running more than one instance, so events
+      and rate-limit counters are shared; one instance until then.
+- [ ] Count signed-in traffic per account, not per IP address, so phones
+      behind one carrier address do not share a limit.
+- [ ] Run the API as `ongo_app` on Neon (carried over from Step 3).
+- [ ] Test the Redis event bus and rate limiter in CI with a Redis service
+      container.
 
 **Done when.** A push to `main` deploys to a staging environment with TLS,
 and the front-end apps can be pointed at it.
@@ -345,17 +382,27 @@ docx are not updated.
 the mobile app's memory to the server, so two devices see the same job.
 
 **Tasks.**
-- [ ] Plan first: read `../On-Go/lib/data/quote_store.dart` (1505 lines) and
-      `project.md`'s domain-rules table; write the contract additions to
-      `on_go_shared` (DTOs, interfaces, routes) with the front-end dev.
-- [ ] Decide what stays client-side (countdown rendering) and what the server
+- [~] Plan first: read `../On-Go/lib/data/quote_store.dart` and `project.md`'s
+      domain-rules table; write the contract additions to `on_go_shared`
+      (DTOs, interfaces, routes) with the front-end dev. The server side is
+      written down (PROJECT.md → Contract gaps 8–13, `openapi.json`); the Dart
+      side is not.
+- [x] Decide what stays client-side (countdown rendering) and what the server
       owns (deadlines from `matchedAt`, ETA caps, cancel lock, expiry sweep,
       priority fees, points awards from `points_policy`).
-- [ ] Implement in slices: requests → quotes → acceptance and status machine →
-      chat → payments (replace `revenue_ledger` with `payments`) → reviews →
-      leaderboard.
-- [ ] Location: consider PostGIS for "mechanics near me".
-- [ ] Events for every state change.
+- [~] Implement in slices: requests, quotes, accept, the status machine,
+      payments, cancel and expiry, reviews and the leaderboard are done; chat
+      is left.
+- [x] Location: haversine in SQL (Step 10a); PostGIS only if "near me" lists
+      grow.
+- [~] Events for every state change. Missing: other mechanics when a job
+      leaves the pool on accept, chat messages, and location updates.
+- [ ] Deploy to staging (deploy/CLOUD_RUN.md §10) and move the app onto the
+      jobs routes.
+- [ ] Slice 8, chat: `chat_messages` (001) already has a body, an image key
+      and a reply-to. It needs send and list routes with paging, an event to
+      the other party, image upload through storage, and a read marker per
+      participant for unread counts (a small migration).
 
 **Done when.** A client on one phone and a mechanic on another complete a job
 end to end through the API.

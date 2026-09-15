@@ -116,6 +116,7 @@ Why these settings:
 | `--allow-unauthenticated` | The API does its own auth; Cloud Run must let requests through. |
 | `--timeout 3600` | WebSocket connections on `/api/v1/events` count as one long request; this is the maximum. Clients reconnect after it. |
 | `--min-instances 0` | Free tier. First request after idle takes a few seconds (cold start). |
+| `--max-instances 2` | Headroom for the trial. Without `REDIS_URL` each instance keeps its own event subscribers and rate-limit counters, so a phone connected to one instance misses events published on the other. Use `--max-instances 1` once live jobs depend on events (section 10). |
 | `TRUST_PROXY_HOPS=1` | Google's front end sits in front; the real client IP is one hop back. |
 | `DOCS_ENABLED=true` | Swagger UI at `/docs` for the front-end developer. Turn off on real production. |
 | `CORS_ALLOW_LOCALHOST=true` | A local Flutter web build (`http://localhost:port`) can call the API. Add the console's real `https://` origin to `CORS_ALLOWED_ORIGINS` once it is hosted. |
@@ -212,6 +213,13 @@ Cloud Logging alerts, e.g. on `auth.token.reuse_detected`.
   gains a `gcs` branch, plus a bucket name in the environment. Until then, do
   not tell mechanics their uploaded IDs are safely stored.
 - Alerting on readiness failures, 5xx rate and `auth.token.reuse_detected`.
+- Connect as `ongo_app` instead of the Neon owner, so the grants in
+  migrations 002–013 apply: give the role a login and a password from a new
+  secret, then point `PGUSER` and the password secret at it.
+- A scheduled retention job for `login_attempts`, `security_events` and spent
+  password reset codes (not written yet).
+- Rate limits counted per signed-in account as well as per IP address, since
+  mobile carriers put many phones behind one address.
 
 ## 10. Releasing the jobs domain (migrations 006 to 013)
 
@@ -223,9 +231,12 @@ adds 006 to 013 and its code reads them, so the schema goes first:
    device:
    ```bash
    gcloud run deploy ongo-api --source . --region asia-southeast1 \
-     --no-traffic --tag candidate \
+     --no-traffic --tag candidate --max-instances 1 \
      --update-env-vars LEGACY_PAYMENT_REPORTS=true
    ```
+   One instance, because the client and the mechanic must hear each other's
+   job events, and without `REDIS_URL` an event stays on the instance that
+   published it. Raise the limit once Redis is configured (section 9).
 2. Run the migrations from that revision's image (section 5):
    ```bash
    REV=$(gcloud run revisions list --service ongo-api --region asia-southeast1 --limit 1 --format='value(metadata.name)')
