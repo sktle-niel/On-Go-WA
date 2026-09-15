@@ -75,3 +75,13 @@ test('legacy payment reports are on outside production, and off in production un
   assert.equal(legacyPaymentReportsEnabled(withEnv(staging, loadConfig)), false);
   assert.equal(legacyPaymentReportsEnabled(withEnv({ ...staging, LEGACY_PAYMENT_REPORTS: 'true' }, loadConfig)), true);
 });
+
+test('the gcs storage driver requires a bucket', () => {
+  assert.throws(
+    () => withEnv({ STORAGE_DRIVER: 'gcs', GCS_BUCKET: undefined }, loadConfig),
+    (err: Error) => err.message.includes('GCS_BUCKET'),
+  );
+  const config = withEnv({ STORAGE_DRIVER: 'gcs', GCS_BUCKET: 'ongo-test-uploads' }, loadConfig);
+  assert.equal(config.STORAGE_DRIVER, 'gcs');
+  assert.equal(config.GCS_BUCKET, 'ongo-test-uploads');
+});

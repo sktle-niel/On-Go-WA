@@ -106,7 +106,7 @@ src/
   plugins/errors.ts    the error envelope for AppError, validation, 4xx, 500
   plugins/docs.ts      @fastify/swagger + swagger-ui (/docs; off in production unless DOCS_ENABLED)
   delivery/*.ts        password-reset code delivery: log driver + smtp (nodemailer); pure email template
-  storage/*.ts         Storage interface, disk driver, magic-byte validation, signed/public URL signing
+  storage/*.ts         Storage interface, disk and gcs drivers, magic-byte validation, signed/public URL signing
   utils/uploads.ts     multipart file validation (magic bytes, size), used by the upload routes
   schemas/*.ts         TypeBox schemas mirroring on_go_shared DTOs (+ verification, moderators, jobs)
   services/*.ts        auth, points, revenue, verification, moderators, jobs, locations, reviews (functions over Queryable)
@@ -168,8 +168,9 @@ SECURITY.md            where secrets live, the checks, the service's security la
   their pending request (`POST /verification-requests/:id/documents`), each
   served by a short-lived signed URL through `GET /api/v1/files/*`; the Sign In
   background (appearance PUT/DELETE) is stored under a `public/` prefix and
-  served without a signature. On Cloud Run the disk is ephemeral — a real
-  deployment swaps in a cloud driver (GCS); the interface does not change.
+  served without a signature. On Cloud Run the disk is ephemeral, so the `gcs`
+  driver (2026-09-15) keeps files in a private Cloud Storage bucket instead,
+  with the service account's token; the API still serves every file.
 - Moderator directory and audit log (Step 6, no migration): admin creates a
   moderator (role set at INSERT, temp password hashed), lists them with
   `actionsHandled`, replaces permissions (immediate, read from the DB each
@@ -215,7 +216,7 @@ SECURITY.md            where secrets live, the checks, the service's security la
 - Security plugins, docs, health routes.
 - Scripts: migrate, seed-admin, gen-secrets, export-openapi.
 - Dockerfile, docker-compose.yml, .env.example.
-- Test suite (22 files, 141 tests) on PGlite.
+- Test suite (24 files, 150 tests) on PGlite.
 
 ### Where each piece runs (checked 2026-09-15)
 
@@ -233,7 +234,7 @@ was fast-forwarded to `main` on 2026-09-15. Revision 00005 was built from
 ### Verified (2026-09-11, re-checked 2026-09-15)
 
 - `npm run typecheck` clean (TypeScript 7.0.2).
-- `npm test` clean: 141 tests on PGlite 0.5.8 (PostgreSQL 18.3 in WebAssembly),
+- `npm test` clean: 150 tests on PGlite 0.5.8 (PostgreSQL 18.3 in WebAssembly),
   re-verified 2026-09-15. Migrations 001–013 apply there unchanged, including
   `CREATE ROLE`, partial unique indexes, `AT TIME ZONE 'Asia/Manila'` and bytea
   parameters.
@@ -282,9 +283,11 @@ was fast-forwarded to `main` on 2026-09-15. Revision 00005 was built from
   Revision 00004 still answers normally on the migrated schema.
 - **Step 3 of §10, moving traffic to revision 00005, is left to the owner.**
 
-**Ephemeral storage caveat:** uploaded documents and the background live on the
-container's `/tmp`, lost on every revision/restart/scale. Fine for a demo; a
-real deployment needs a GCS driver (see `deploy/CLOUD_RUN.md` §9).
+**Ephemeral storage caveat:** staging still runs the `disk` driver, so uploaded
+documents and the background live on the container's `/tmp` and are lost on
+every revision, restart or scale. The `gcs` driver and the bucket
+`gs://ongo-staging-2026-uploads` are ready; switching is one deploy
+(`deploy/CLOUD_RUN.md` §12).
 
 ### Repository hygiene (2026-09-14)
 
@@ -622,6 +625,8 @@ Verified 2026-09-11 and to be kept true:
   asia-southeast1, billing account 01F2AC-2E9C79-B8B63A. Secrets:
   `ongo-jwt-signing-key`, `ongo-password-pepper`, `ongo-pg-password`.
   Cloud Run runs as `618821603306-compute@developer.gserviceaccount.com`.
+  Uploads bucket: `gs://ongo-staging-2026-uploads` (private; that service
+  account holds `roles/storage.objectUser` on it and nothing else there).
   Service `ongo-api`: `https://ongo-api-618821603306.asia-southeast1.run.app`.
   Job `ongo-migrate` runs migrations from the deployed image; after a deploy,
   `gcloud run jobs update ongo-migrate --image <new image>` then `execute`.

@@ -1,6 +1,6 @@
 import type { AppConfig } from '../../src/config/env.js';
-import { newUuid, sha256 } from '../../src/utils/crypto.js';
-import { extToType, isPublicKey, signKey, urlBase, type Storage } from '../../src/storage/storage.js';
+import { sha256 } from '../../src/utils/crypto.js';
+import { apiFileUrls, extToType, keyFor, type Storage } from '../../src/storage/storage.js';
 
 /**
  * In-memory object storage for tests: the same key shapes and the same signed
@@ -9,12 +9,11 @@ import { extToType, isPublicKey, signKey, urlBase, type Storage } from '../../sr
  */
 export function createMemoryStorage(config: AppConfig): Storage {
   const files = new Map<string, { body: Buffer; contentType: string }>();
-  const base = urlBase(config);
+  const urls = apiFileUrls(config);
 
   return {
     async put({ kind, ext, body }) {
-      const prefix = kind === 'background' ? 'public/background' : 'documents';
-      const key = `${prefix}/${newUuid()}.${ext}`;
+      const key = keyFor(kind, ext);
       files.set(key, { body, contentType: extToType(key) });
       return { key, sha256: sha256(body), bytes: body.byteLength };
     },
@@ -24,14 +23,7 @@ export function createMemoryStorage(config: AppConfig): Storage {
     async read(key) {
       return files.get(key) ?? null;
     },
-    signedUrl(key, ttlSeconds) {
-      const exp = Math.floor(Date.now() / 1000) + ttlSeconds;
-      const sig = signKey(config.JWT_SIGNING_KEY, key, exp);
-      return `${base}/api/v1/files/${key}?exp=${exp}&sig=${sig}`;
-    },
-    publicUrl(key) {
-      if (!isPublicKey(key)) throw new Error('publicUrl called for a non-public key');
-      return `${base}/api/v1/files/${key}`;
-    },
+    signedUrl: urls.signedUrl,
+    publicUrl: urls.publicUrl,
   };
 }

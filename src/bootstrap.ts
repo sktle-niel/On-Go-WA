@@ -26,6 +26,9 @@ export async function bootstrap(): Promise<void> {
 
   const events = config.REDIS_URL ? createRedisBus(config.REDIS_URL) : createMemoryBus();
   const storage = createStorage(config);
+  if (config.NODE_ENV === 'production' && config.STORAGE_DRIVER === 'disk') {
+    logger.warn('uploads are on the container disk, which a restart or a new revision empties; set STORAGE_DRIVER=gcs');
+  }
 
   const app = await buildApp({ config, db, events, redis, storage });
 
