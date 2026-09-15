@@ -164,6 +164,12 @@ const schema = z
     // ── Reporting ───────────────────────────────────────────────────────────
     /** The calendar the revenue ledger is bucketed by month in. */
     REVENUE_TIMEZONE: z.string().min(1).default('Asia/Manila'),
+    /** Compatibility window for mobile builds that still settle jobs on the
+     *  device: POST /payments books the paying client's checked report of a job
+     *  the server does not hold. On by default outside production; a production
+     *  deployment must set it. Turn it off once the app pays through
+     *  POST /service-requests/:id/pay. */
+    LEGACY_PAYMENT_REPORTS: flag.optional(),
   })
   .superRefine((env, ctx) => {
     const fail = (path: string, message: string) =>
@@ -234,4 +240,8 @@ export function isProduction(): boolean {
 
 export function docsEnabled(config: AppConfig): boolean {
   return config.DOCS_ENABLED ?? config.NODE_ENV !== 'production';
+}
+
+export function legacyPaymentReportsEnabled(config: AppConfig): boolean {
+  return config.LEGACY_PAYMENT_REPORTS ?? config.NODE_ENV !== 'production';
 }

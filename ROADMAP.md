@@ -5,6 +5,33 @@ the model that fits. Tick the boxes as they land and update PROJECT.md.
 
 Status legend: `[ ]` not started · `[~]` in progress · `[x]` done
 
+**Order from here (planned 2026-09-15).** Details are in the steps below and
+in PROJECT.md → Known issues.
+
+1. Release Step 10 as it stands. Done 2026-09-15: pull request #3 merged into
+   `main`, `development` fast-forwarded, revision 00005 deployed on one
+   instance with no traffic, migrations 006–013 applied on Neon, smoke run
+   passed. Left for the owner: open and merge pull request #4 (the
+   compatibility window and docs), move traffic (deploy/CLOUD_RUN.md §10 step
+   3), and configure SMTP (§11).
+2. Hand the jobs contract to the front-end dev. Done 2026-09-15: the Dart
+   contract is on the front-end branch `feature/jobs-contract`, checked against
+   the API, and the integration guide is at version 0.2.0. Left: the front-end
+   dev merges it, writes the `on_go_api` implementations, and moves the app to
+   `/pay` so `LEGACY_PAYMENT_REPORTS` can close.
+3. Step 10 slice 8, chat, on the `chat_messages` table from 001, with images
+   and unread markers.
+4. Storage that survives a restart (a GCS driver, Step 7), then job photos and
+   the profile photo on top of it.
+5. Account profile routes: name, phone, address and photo.
+6. Operations (Step 9): Redis before a second instance, per-account rate
+   limits, the retention job, running as `ongo_app`, alerts.
+7. Smaller follow-ups: tell other mechanics when a job leaves the pool, review
+   paging and console removal, a live location event, the late-arrival notice,
+   the stale slice-1 comments in the jobs code, the Fastify deprecation of
+   `disableRequestLogging` (FSTDEP023, moves to `logController`), the README
+   (Step 4).
+
 ---
 
 ## Step 1 — Green typecheck and tests `[x]` (done 2026-09-11)
@@ -54,8 +81,8 @@ Status legend: `[ ]` not started · `[~]` in progress · `[x]` done
 - [x] `node dist/src/index.js` boots without a database: `/health/live` 200,
       `/health/ready` 503 `degraded`, `/docs/json` lists 23 paths, unknown
       routes return the error envelope.
-- [ ] `npm run openapi` writes `openapi/openapi.json` (run when the front-end
-      dev needs the file).
+- [x] `npm run openapi` writes `openapi/openapi.json` (last run 2026-09-15:
+      50 paths, handed over with the jobs notes).
 - [~] Docker image: no Docker on this machine. Cloud Build builds the same
       Dockerfile during the first `gcloud run deploy` (Step 3).
 
@@ -104,7 +131,8 @@ reachable at a public URL. Follow `deploy/CLOUD_RUN.md`.
 
 **Done when.** The front-end developer can sign in against the public URL and
 read `/docs`.
-n**Result (2026-09-14).** Service URL
+
+**Result (2026-09-14).** Service URL
 `https://ongo-api-618821603306.asia-southeast1.run.app`, revision
 `ongo-api-00001`. `/health/ready` reports `database: up`; the seeded admin
 signs in from `/docs` (console surface, refresh cookie set) and authenticates
@@ -117,7 +145,7 @@ not a superuser.
 
 ---
 
-## Step 4 — README for the front-end developer `[~]` (API hand-off done via the integration guide; repo quick-start README pending)
+## Step 4 — README for the front-end developer `[~]` (integration guide outside the repo, version 0.2.0 on 2026-09-15; quick-start README pending)
 
 **Goal.** Someone who has never seen this repo can run it and integrate.
 
@@ -132,6 +160,9 @@ not a superuser.
       the Dart side.
 - [ ] Deployment reference: ECS Fargate or App Runner, RDS, ElastiCache, S3,
       Secrets Manager, ALB + WAF, CloudWatch.
+- [x] Bring `../On Go Documentation/API-Integration-Guide.md` and its docx up
+      to date with Step 10 and 10a: jobs, pay, wallet, reviews, locations, the
+      compatibility window and the new events (version 0.2.0, 2026-09-15).
 
 **Done when.** The front-end dev can point the Flutter apps at the API without
 asking questions in chat.
@@ -209,14 +240,17 @@ queue decisions, so the log is one merged stream. Mutations publish
 out on the next request and the merged audit log. The display role label is
 always "Moderator" (no column persists a custom label).
 
-## Step 7 — Object storage `[x]` (done 2026-09-14, disk driver; cloud driver at deploy)
+## Step 7 — Object storage `[~]` (disk driver done 2026-09-14; cloud driver pending)
 
 **Goal.** Files (credential documents, the Sign In background) have a home.
 
 **Tasks.**
-- [x] `storage/` abstraction: `put`, `delete`, `signedUrl`. Local-disk
-      implementation for dev/tests, S3 implementation for deployment
-      (`@aws-sdk/client-s3`, presigned GET URLs, bucket private).
+- [x] `storage/` abstraction: `put`, `delete`, `signedUrl`, with a local-disk
+      implementation for dev, tests and a single-instance demo.
+- [ ] A cloud implementation for deployment. Planned as S3; on Cloud Run a
+      Google Cloud Storage driver fits better, because the service account
+      reaches a private bucket without keys. `STORAGE_DRIVER` accepts only
+      `disk` today.
 - [x] `@fastify/multipart` with size and MIME limits (images and PDF for
       documents; JPEG/PNG/WebP ≤ 5 MB for the background).
 - [x] Document upload route attached to a verification request; rows in
@@ -266,7 +300,7 @@ email content is a pure, tested template. Reset requests are capped per email
 stays a future driver behind the same interface (needs a gateway choice, e.g.
 a PH SMS provider). Config `DELIVERY_DRIVER=smtp` requires the SMTP_* values.
 
-## Step 9 — CI and deployment `[ ]`
+## Step 9 — CI and deployment `[~]`
 
 **Goal.** Every change is checked, and a tagged build reaches a server.
 
@@ -282,7 +316,15 @@ a PH SMS provider). Config `DELIVERY_DRIVER=smtp` requires the SMTP_* values.
       5xx rate and readiness failures.
 - [ ] Migrations as a deploy step (`node dist/scripts/migrate.js` as the
       migrator role) before the new task set goes live.
-- [ ] Retention job for `login_attempts` and `security_events`.
+- [ ] Retention job for `login_attempts`, `security_events` and spent
+      `password_reset_codes`.
+- [ ] Redis (`REDIS_URL`) before running more than one instance, so events
+      and rate-limit counters are shared; one instance until then.
+- [ ] Count signed-in traffic per account, not per IP address, so phones
+      behind one carrier address do not share a limit.
+- [ ] Run the API as `ongo_app` on Neon (carried over from Step 3).
+- [ ] Test the Redis event bus and rate limiter in CI with a Redis service
+      container.
 
 **Done when.** A push to `main` deploys to a staging environment with TLS,
 and the front-end apps can be pointed at it.
@@ -317,7 +359,7 @@ user and answers "which open jobs are near this mechanic". Added to
       `client | mechanic`, `available | onJob | offline`.
 - [x] Integration tests on PGlite, including the radius edge and the
       availability skip.
-- [ ] Update the integration guide and regenerate the docx.
+- [x] Update the integration guide and regenerate the docx (2026-09-15).
 
 **Done when.** A mechanic phone reports a fix and the nearby-jobs query returns
 the pending requests inside its radius. Depends on jobs having locations, so
@@ -332,7 +374,7 @@ app's bookings carry only text and coordinates. Found on the way: the shared
 `Nullable` schema listed the value before null, so the validator's type
 coercion turned a booking's `latitude: null` into 0. Null is now tried first,
 and the migration repairs (0, 0) rows. 7 tests. The integration guide and its
-docx are not updated.
+docx caught up on 2026-09-15 (version 0.2.0).
 
 **Model.** Mid-tier model; top-tier review for the ownership rules on
 `GET /users/:userId/location`.
@@ -345,20 +387,52 @@ docx are not updated.
 the mobile app's memory to the server, so two devices see the same job.
 
 **Tasks.**
-- [ ] Plan first: read `../On-Go/lib/data/quote_store.dart` (1505 lines) and
-      `project.md`'s domain-rules table; write the contract additions to
-      `on_go_shared` (DTOs, interfaces, routes) with the front-end dev.
-- [ ] Decide what stays client-side (countdown rendering) and what the server
+- [x] Plan first: read `../On-Go/lib/data/quote_store.dart` and `project.md`'s
+      domain-rules table; write the contract additions to `on_go_shared`
+      (DTOs, interfaces, routes) with the front-end dev. The Dart side is on
+      the front-end branch `feature/jobs-contract` (2026-09-15), checked
+      against recorded responses and `openapi.json`; merging it is the
+      front-end dev's.
+- [x] Decide what stays client-side (countdown rendering) and what the server
       owns (deadlines from `matchedAt`, ETA caps, cancel lock, expiry sweep,
       priority fees, points awards from `points_policy`).
-- [ ] Implement in slices: requests → quotes → acceptance and status machine →
-      chat → payments (replace `revenue_ledger` with `payments`) → reviews →
-      leaderboard.
-- [ ] Location: consider PostGIS for "mechanics near me".
-- [ ] Events for every state change.
+- [~] Implement in slices: requests, quotes, accept, the status machine,
+      payments, cancel and expiry, reviews and the leaderboard are done; chat
+      is left.
+- [x] Location: haversine in SQL (Step 10a); PostGIS only if "near me" lists
+      grow.
+- [~] Events for every state change. Missing: other mechanics when a job
+      leaves the pool on accept, chat messages, and location updates.
+- [~] Deploy to staging (deploy/CLOUD_RUN.md §10) and move the app onto the
+      jobs routes. Revision 00005 and migrations 006–013 are live with no
+      traffic (2026-09-15); moving traffic and the app remain.
+- [ ] Slice 8, chat: `chat_messages` (001) already has a body, an image key
+      and a reply-to. It needs send and list routes with paging, an event to
+      the other party, image upload through storage, and a read marker per
+      participant for unread counts (a small migration).
 
 **Done when.** A client on one phone and a mechanic on another complete a job
 end to end through the API.
+
+**Release (2026-09-15).** Pull request #3 put slices 1–7 and Step 10a on
+`main`. Revision `ongo-api-00005` was deployed from `feature/step-10-jobs`,
+which adds the compatibility window, with no traffic and one instance; the
+migrate job applied 006–013 on Neon, and the candidate URL passed a smoke run.
+Moving traffic and merging pull request #4 are left to the owner. The Dart
+contract for the jobs, wallet and review routes is on the front-end branch
+`feature/jobs-contract`: 66 checks against recorded responses and
+`openapi.json` passed, and `flutter analyze` on the app reports no issues. The
+integration guide is at version 0.2.0.
+
+**Compatibility (2026-09-15): the live app's payment reports.** The front end's
+`c04792e` connects the app to the API but still settles jobs on the device and
+reports each payment to `POST /payments`. Rather than hold the deploy or drop
+that revenue, migration 013 and `LEGACY_PAYMENT_REPORTS` let the paying client
+book a device job's report again, checked: the urgency's real fee, a `paidAt`
+from the last week, once per job, 20 a day, refusals logged. Jobs the server
+holds still book only through `/pay`, and the summary reads both without
+counting a job twice. Turn the window off once the app pays through `/pay`.
+4 tests. Release order and SMTP setup: deploy/CLOUD_RUN.md §10 and §11.
 
 **Slice 7 done (2026-09-15): reviews and leaderboard.** No migration: 001 already
 had `reviews` (one per client per mechanic) and `review_likes`. A client creates
