@@ -107,15 +107,15 @@ src/
   storage/*.ts         Storage interface, disk driver, magic-byte validation, signed/public URL signing
   utils/uploads.ts     multipart file validation (magic bytes, size), used by the upload routes
   schemas/*.ts         TypeBox schemas mirroring on_go_shared DTOs (+ verification, moderators, jobs)
-  services/*.ts        auth, points, revenue, verification, moderators, jobs, locations (functions over Queryable)
+  services/*.ts        auth, points, revenue, verification, moderators, jobs, locations, reviews (functions over Queryable)
   routes/health.ts     /health/live, /health/ready
   routes/v1/*.ts       one file per domain (auth, verification, moderators, revenue, appearance,
-                       points, events, files, jobs, locations), registered under /api/v1
+                       points, events, files, jobs, locations, reviews), registered under /api/v1
 test/
   helpers/             env, PGlite database, app factory, createUser/signInAs
   unit/                config, tokens, errors
   integration/         migrations, health, auth, points, revenue, stubs, events, verification,
-                       moderators, storage, delivery, jobs, quotes, accept, status, payments, cancel, locations
+                       moderators, storage, delivery, jobs, quotes, accept, status, payments, cancel, locations, reviews
 Dockerfile             multi-stage, non-root, healthcheck; CMD node dist/src/index.js
 docker-compose.yml     postgres (default), redis (profile), api (profile full)
 .env.example           every setting, with comments
@@ -187,8 +187,8 @@ deploy/CLOUD_RUN.md    step-by-step trial deployment: Cloud Run + Neon + Secret 
   starts; the mechanic cancels before any progress step; an overdue job not
   under way returns to the pool, swept before every jobs route and on a
   timer). Events `service_request.created`/`.updated`, `quote.submitted`/
-  `.updated`, `payment.completed`. Remaining slices: reviews + leaderboard,
-  chat.
+  `.updated`, `payment.completed`, slice 7 reviews and leaderboard (see below).
+  Remaining slice: chat.
 - Locations (Step 10a, migration 012): `POST /locations` keeps each account's
   latest fix (the token holder is the subject; role must be the caller's own;
   availability for mechanics only); `GET /users/:userId/location` for the owner,
@@ -196,6 +196,11 @@ deploy/CLOUD_RUN.md    step-by-step trial deployment: Cloud Run + Neon + Secret 
   `GET /mechanics/:mechanicId/nearby-jobs` implementing
   `isJobWithinServiceRadius` with `ongo_great_circle_m`, the haversine of
   `GeoPoint.distanceTo`, nearest first.
+- Reviews and leaderboard (Step 10 slice 7, no migration): a client creates or
+  edits their one review of a mechanic once that mechanic has completed a paid
+  job for them; reviews list newest first with the average and star
+  distribution; any client or mechanic marks a review helpful once; and
+  `GET /leaderboard` ranks approved, active mechanics by rating or review count.
 - Open-pool fix (2026-09-15): `GET /service-requests?scope=open` answers 403 to
   clients and records `authz.denied`; mechanics and console roles still read it.
   Before, any signed-in client could list every pending request with the other
@@ -203,7 +208,7 @@ deploy/CLOUD_RUN.md    step-by-step trial deployment: Cloud Run + Neon + Secret 
 - Security plugins, docs, health routes.
 - Scripts: migrate, seed-admin, gen-secrets, export-openapi.
 - Dockerfile, docker-compose.yml, .env.example.
-- Test suite (21 files, 132 tests) on PGlite.
+- Test suite (22 files, 137 tests) on PGlite.
 
 ### Implemented since the last hosting snapshot
 
@@ -214,7 +219,7 @@ In background — (Step 7) are all live. Nothing answers `501` anymore.
 ### Verified (2026-09-11)
 
 - `npm run typecheck` clean (TypeScript 7.0.2).
-- `npm test` clean: 132 tests on PGlite 0.5.8 (PostgreSQL 18.3 in WebAssembly),
+- `npm test` clean: 137 tests on PGlite 0.5.8 (PostgreSQL 18.3 in WebAssembly),
   re-verified 2026-09-15. Migrations 001–012 apply there unchanged, including
   `CREATE ROLE`, partial unique indexes, `AT TIME ZONE 'Asia/Manila'` and bytea
   parameters.
@@ -277,6 +282,8 @@ real deployment needs a GCS driver (see `deploy/CLOUD_RUN.md` §9).
   from `expectedArrivalAt`.
 - `LocationApi` has no watch method, so a client following their mechanic polls
   `GET /users/:userId/location`; no location event is published.
+- Reviews have no report or removal path for the console yet, and the review
+  list is capped at the newest 200 with no paging.
 - Fixed by slices 5–6 (2026-09-15): the trusted revenue route, finished jobs
   that never closed, the Emergency accept record's placeholder price, and
   matched jobs that could neither be cancelled nor expire. Fixed with Step 10a:
@@ -316,6 +323,10 @@ real deployment needs a GCS driver (see `deploy/CLOUD_RUN.md` §9).
 | POST | /locations | LocationApi.reportLocation | client, mechanic; the token holder is the subject | live |
 | GET | /users/:userId/location | LocationApi.fetchLastKnown | owner, console, or the other party of a matched job; 404 otherwise | live |
 | GET | /mechanics/:mechanicId/nearby-jobs | LocationApi.findNearbyJobIds | the mechanic themself, console | live |
+| PUT | /mechanics/:mechanicId/review | (addition) create or edit your review | client, after a paid job with that mechanic | live |
+| GET | /mechanics/:mechanicId/reviews | (addition) reviews newest first, with average and distribution | bearer | live |
+| PUT/DELETE | /reviews/:reviewId/helpful | (addition) mark or unmark a review helpful | client, mechanic | live |
+| GET | /leaderboard | (addition) approved mechanics ranked by rating or reviews | bearer | live |
 | POST | /service-requests | (addition) book a request | client | live |
 | GET | /service-requests | (addition) list open / mine | bearer; `scope=open` mechanic or console only (client 403) | live |
 | GET | /service-requests/:id | (addition) one request | owner / mechanic / console | live |
@@ -347,7 +358,7 @@ real deployment needs a GCS driver (see `deploy/CLOUD_RUN.md` §9).
    `client` and `demo-mechanic` were local shortcuts and do not exist here.
 5. Access tokens expire in 10 minutes; clients must refresh on `token_expired`.
 6. `watch*` streams are one WebSocket with the protocol in
-   `src/routes/v1/events.ts`. Event names so far: `points_policy.updated`, `verification_request.updated`, `moderator.updated`, `platform_appearance.updated`, `service_request.created`, `service_request.updated`, `quote.submitted`, `quote.updated`, `payment.completed`.
+   `src/routes/v1/events.ts`. Event names so far: `points_policy.updated`, `verification_request.updated`, `moderator.updated`, `platform_appearance.updated`, `service_request.created`, `service_request.updated`, `quote.submitted`, `quote.updated`, `payment.completed`, `review.submitted`.
 7. `ModerationDecision.actorName`/`actorId` are accepted and ignored; the
    actor is the token holder.
 8. **The jobs domain is moving server-side (Step 10, in progress) and is not in
@@ -366,7 +377,7 @@ real deployment needs a GCS driver (see `deploy/CLOUD_RUN.md` §9).
    carries `error.details.cancellableAt`, and every request carries
    `deadlineAt` and `expectedArrivalAt`, so the app's countdowns read the
    server's clock. The app's own expiry sweep and cancel rules can go. Still to
-   come: reviews/leaderboard, chat.
+   come: chat.
 9. **`LocationApi` is served (Step 10a, 2026-09-15):** `POST /locations`,
    `GET /users/:userId/location`, `GET /mechanics/:mechanicId/nearby-jobs?radiusKm=`.
    `source`, `role` and `availability` travel as Dart enum names. For the Dart
@@ -385,6 +396,15 @@ real deployment needs a GCS driver (see `deploy/CLOUD_RUN.md` §9).
    `clientPointsAwarded` from the returned request. The points wallet
    (`GET /points/wallet`, `POST /points/convert`) replaces `PointsWalletStore`;
    `PointsEntryKind` travels as the Dart enum names.
+11. **Reviews and the leaderboard are served but not in `on_go_shared`.**
+   `PUT /mechanics/:mechanicId/review`, `GET /mechanics/:mechanicId/reviews`,
+   `PUT`/`DELETE /reviews/:reviewId/helpful`, `GET /leaderboard`. The app keys
+   reviews and the leaderboard by mechanic name; the server uses account ids. A
+   review needs a paid job between the client and the mechanic, which the app
+   never required. `updatedAt` is the app's `MechanicReview.date`, and
+   `distribution` matches `ratingDistributionFor`. The leaderboard carries no
+   tier, because "Gold" in the app had no rule behind it. `review.submitted`
+   goes to the rated mechanic.
 
 ## Rules
 

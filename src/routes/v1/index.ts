@@ -8,6 +8,7 @@ import { locationRoutes } from './locations.js';
 import { moderatorRoutes } from './moderators.js';
 import { pointsRoutes } from './points.js';
 import { revenueRoutes } from './revenue.js';
+import { reviewRoutes } from './reviews.js';
 import { verificationRoutes } from './verification.js';
 
 /**
@@ -25,4 +26,5 @@ export const v1Routes: FastifyPluginAsyncTypebox = async (app) => {
   await app.register(filesRoutes);
   await app.register(jobRoutes);
   await app.register(locationRoutes);
+  await app.register(reviewRoutes);
 };

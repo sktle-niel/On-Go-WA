@@ -54,3 +54,5 @@ export function errorResponses(...codes: number[]): Record<number, TSchema> {
 }
 
 export const IdParams = Type.Object({ id: Uuid });
+
+export const MechanicIdParams = Type.Object({ mechanicId: Uuid });

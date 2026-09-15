@@ -44,6 +44,7 @@ export async function registerDocs(app: FastifyInstance, config: AppConfig): Pro
         { name: 'Jobs', description: 'Service requests, quotes, the job status machine and payment' },
         { name: 'Points', description: 'The points wallet' },
         { name: 'Locations', description: 'Last known locations and nearby jobs' },
+        { name: 'Reviews', description: 'Mechanic reviews, helpful marks and the leaderboard' },
       ],
     },
   });

@@ -339,7 +339,7 @@ docx are not updated.
 
 ---
 
-## Step 10 — The jobs domain `[~]` (in progress; slices 1–6 done by 2026-09-15)
+## Step 10 — The jobs domain `[~]` (in progress; slices 1–7 done by 2026-09-15)
 
 **Goal.** Help requests, quotes, ETA, chat, reviews and QR payments move from
 the mobile app's memory to the server, so two devices see the same job.
@@ -359,6 +359,17 @@ the mobile app's memory to the server, so two devices see the same job.
 
 **Done when.** A client on one phone and a mechanic on another complete a job
 end to end through the API.
+
+**Slice 7 done (2026-09-15): reviews and leaderboard.** No migration: 001 already
+had `reviews` (one per client per mechanic) and `review_likes`. A client creates
+or edits their review of a mechanic (`PUT /mechanics/:id/review`, 1 to 5 stars
+and a comment) once that mechanic has completed a paid job for them, which the
+app never checked; the mechanic hears `review.submitted`. Reviews list newest
+first with the average and star distribution (`GET /mechanics/:id/reviews`), any
+client or mechanic marks one helpful once (`PUT`/`DELETE /reviews/:id/helpful`),
+and `GET /leaderboard` ranks approved, active mechanics by rating or by review
+count, with a literal name search and an overall rank. No tier, since the app's
+"Gold" had no rule. 5 tests. Remaining: chat.
 
 **Slice 6 done (2026-09-15): cancel and expiry.** Migration 011 backfills
 completion deadlines and indexes the expiry sweep. Accepting a quote or an

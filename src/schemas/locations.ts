@@ -47,8 +47,6 @@ export const LocationUpdate = Type.Object({
 
 export const UserIdParams = Type.Object({ userId: Uuid });
 
-export const MechanicIdParams = Type.Object({ mechanicId: Uuid });
-
 export const NearbyJobsQuery = Type.Object({
   radiusKm: Type.Number({
     maximum: 20_100,

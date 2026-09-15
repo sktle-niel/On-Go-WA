@@ -1,11 +1,10 @@
 import type { FastifyPluginAsyncTypebox } from '@fastify/type-provider-typebox';
 import { Type } from '@fastify/type-provider-typebox';
 import { currentAuth, MOBILE_ROLES, requireAuth } from '../../auth/guard.js';
-import { errorResponses, NoContent, Uuid } from '../../schemas/common.js';
+import { errorResponses, MechanicIdParams, NoContent, Uuid } from '../../schemas/common.js';
 import {
   LocationUpdate,
   LocationUpdateBody,
-  MechanicIdParams,
   NearbyJobsQuery,
   UserIdParams,
 } from '../../schemas/locations.js';
