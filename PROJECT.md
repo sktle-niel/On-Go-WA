@@ -10,20 +10,26 @@ front ends that another developer builds:
 
 | Front end | Roles | Where it lives |
 | --- | --- | --- |
-| Mobile app | Client, Mechanic | `../On-Go/lib` |
-| Admin console (web) | Admin, Moderator | separate `on_go_console` repository (not on this machine; same `on_go_shared` contract) |
+| Mobile app | Client, Mechanic | `Documents/On-Go/lib` (`sktle-niel/On-Go`) |
+| Admin console (web) | Admin, Moderator | `Documents/On-Go-Console` (`sktle-niel/On-Go-Console`) |
+
+The three repositories are not siblings: this one lives under
+`Documents/OnGo App/`, and both front ends under `Documents/` directly. Use the
+paths above rather than a relative one.
 
 The API contract both front ends code against is the pure-Dart package
-`../On-Go/packages/on_go_shared` (`lib/src/api/api_endpoints.dart` for routes,
-`lib/src/models/` for DTOs). **This backend implements that contract.** Every
-route path, JSON field name and enum `wireName` here mirrors it.
+`Documents/On-Go/packages/on_go_shared` (`lib/src/api/api_endpoints.dart` for
+routes, `lib/src/models/` for DTOs). **This backend implements that contract.**
+Every route path, JSON field name and enum `wireName` here mirrors it. The
+console resolves that same package from the mobile repository by relative path,
+so the two front-end checkouts have to stay side by side.
 
 **Scope of this repo: backend only.** No Flutter work happens here. Read-only
-references into `../On-Go` are fine.
+references into either front end are fine.
 
 ## Decisions (and why)
 
-- **TypeScript + Node 24 + Fastify 5.** The old scaffold in `../On-Go/server`
+- **TypeScript + Node 24 + Fastify 5.** The old scaffold in `Documents/On-Go/server`
   was already Fastify/TypeScript and hardened (argon2, jose, zod config,
   least-privilege SQL roles). Fastify is one of the fastest Node frameworks,
   schema-validates every request, and generates OpenAPI from the same schemas.
@@ -668,21 +674,25 @@ Verified 2026-09-11 and to be kept true:
   fast-forwarded to it. The later commits on `feature/step-10-jobs` wait for
   pull request #4 into `main`. The `gh` CLI is not installed; the owner opens
   and merges pull requests on GitHub.
-- The front-end repo `https://github.com/sktle-niel/On-Go.git` is cloned at
-  `../On-Go` on branch `master`, synced 2026-09-15 to `c04792e` ("connect mobile
-  app to On Go API"). The pre-sync local edits, an early `RemoteAuthService` now
-  superseded by `packages/on_go_api`, are kept in `git stash` there; the older
-  local-only branch `local-snapshot` keeps the 2026-09-14 copy. A `git fetch`
-  on 2026-09-15 found nothing newer than `c04792e`. The Step 10 Dart contract is
-  on the front-end branch `feature/jobs-contract` (`56e2389`), made in a
-  separate worktree so the local edits there stayed untouched. The admin console moved
-  upstream to a separate `on_go_console` repository that is not on this
-  machine.
+- The mobile repo `https://github.com/sktle-niel/On-Go.git` is cloned at
+  `Documents/On-Go`, on branch `feature/rankings-evaluations` as of
+  2026-09-16. That branch merges two lines of work that had both been sitting
+  uncommitted: the rankings, evaluations and urgency-policy work, and the UI
+  polish. It also holds all three shared packages — `on_go_design`,
+  `on_go_shared` and `on_go_api` — which had been moved into a `Backend/` tree
+  that was later deleted, and were recovered from the recycle bin on
+  2026-09-16. `master` is still at `c04792e`, and the Step 10 Dart contract is
+  on `feature/jobs-contract` (`56e2389`), not merged.
+- The admin console is at `Documents/On-Go-Console`
+  (`https://github.com/sktle-niel/On-Go-Console.git`), first committed
+  2026-09-16. It had never been under version control, and its seam package
+  `on_go_console_backend` existed only in the recycle bin. It carries that
+  package itself and resolves the other three from `../On-Go/packages/`.
 - The integration guide for the front-end dev lives outside this repository,
-  in `../On Go Documentation` (`API-Integration-Guide.md`, its `.docx` and an
-  `openapi.json`). Version 0.2.0, updated 2026-09-15 for Step 10 and 10a. The
-  `.docx` is rebuilt from the Markdown by saving an HTML rendering through
-  Word, and `openapi.json` there has 50 paths.
+  in `Documents/On Go Documentation` (`API-Integration-Guide.md`, its `.docx`
+  and an `openapi.json`). Version 0.2.0, updated 2026-09-15 for Step 10 and
+  10a. The `.docx` is rebuilt from the Markdown by saving an HTML rendering
+  through Word, and `openapi.json` there has 50 paths.
 
 ## Commands
 
