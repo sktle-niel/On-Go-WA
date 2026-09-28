@@ -1,7 +1,8 @@
 # On Go Backend — Project Memory
 
-Last updated: 2026-09-15. Keep this file honest: it is what the next session
-plans against. Update the **Status** section whenever something is finished.
+Last updated: 2026-09-28 (workspace layout). Keep this file honest: it is what
+the next session plans against. Update the **Status** section whenever something
+is finished.
 
 ## What this is
 
@@ -10,15 +11,16 @@ front ends that another developer builds:
 
 | Front end | Roles | Where it lives |
 | --- | --- | --- |
-| Mobile app | Client, Mechanic | `Documents/On-Go/lib` (`sktle-niel/On-Go`) |
-| Admin console (web) | Admin, Moderator | `Documents/On-Go-Console` (`sktle-niel/On-Go-Console`) |
+| Mobile app | Client, Mechanic | `../On-Go/lib` (`sktle-niel/On-Go`) |
+| Admin console (web) | Admin, Moderator | `../On-Go-Console` (`sktle-niel/On-Go-Console`) |
 
-The three repositories are not siblings: this one lives under
-`Documents/OnGo App/`, and both front ends under `Documents/` directly. Use the
-paths above rather than a relative one.
+Since 2026-09-28 the three checkouts are siblings under
+`Documents/Niel/OnGo App/`: `On-Go backend api` (this repository), `On-Go` and
+`On-Go-Console`, with the hand-off documents in `On Go Documentation` beside
+them. Relative paths between them are safe.
 
 The API contract both front ends code against is the pure-Dart package
-`Documents/On-Go/packages/on_go_shared` (`lib/src/api/api_endpoints.dart` for
+`../On-Go/packages/on_go_shared` (`lib/src/api/api_endpoints.dart` for
 routes, `lib/src/models/` for DTOs). **This backend implements that contract.**
 Every route path, JSON field name and enum `wireName` here mirrors it. The
 console resolves that same package from the mobile repository by relative path,
@@ -29,7 +31,7 @@ references into either front end are fine.
 
 ## Decisions (and why)
 
-- **TypeScript + Node 24 + Fastify 5.** The old scaffold in `Documents/On-Go/server`
+- **TypeScript + Node 24 + Fastify 5.** The old scaffold in `../On-Go/server`
   was already Fastify/TypeScript and hardened (argon2, jose, zod config,
   least-privilege SQL roles). Fastify is one of the fastest Node frameworks,
   schema-validates every request, and generates OpenAPI from the same schemas.
@@ -670,26 +672,36 @@ Verified 2026-09-11 and to be kept true:
   `https://github.com/sktle-niel/On-Go-WA.git`, branch `main`. Commits carry
   only the owner's identity (no co-author or tool trailers). Working branch:
   `development`; `main` is what is deployed. The owner merged Step 10 into
-  `main` as pull request #3 (`030651b`, 2026-09-15), and `development` was
-  fast-forwarded to it. The later commits on `feature/step-10-jobs` wait for
-  pull request #4 into `main`. The `gh` CLI is not installed; the owner opens
-  and merges pull requests on GitHub.
-- The mobile repo `https://github.com/sktle-niel/On-Go.git` is cloned at
-  `Documents/On-Go`, on branch `feature/rankings-evaluations` as of
-  2026-09-16. That branch merges two lines of work that had both been sitting
-  uncommitted: the rankings, evaluations and urgency-policy work, and the UI
-  polish. It also holds all three shared packages — `on_go_design`,
-  `on_go_shared` and `on_go_api` — which had been moved into a `Backend/` tree
-  that was later deleted, and were recovered from the recycle bin on
-  2026-09-16. `master` is still at `c04792e`, and the Step 10 Dart contract is
-  on `feature/jobs-contract` (`56e2389`), not merged.
-- The admin console is at `Documents/On-Go-Console`
+  `main` as pull request #3 (`030651b`, 2026-09-15); pull requests #4 to #7
+  (2026-09-15 and 16) added the compatibility window, the gcs driver and chat,
+  so `main` is `9a829d2`, and `development` was fast-forwarded to it on
+  2026-09-28. The `gh` CLI is not installed; the owner opens and merges pull
+  requests on GitHub.
+- **Workspace since 2026-09-28:** everything lives under
+  `Documents/Niel/OnGo App/` — this repository as `On-Go backend api`, the
+  mobile app as `On-Go`, the console as `On-Go-Console`, and the hand-off
+  documents as `On Go Documentation`. Before that the backend sat in
+  `Documents/OnGo App/` and the front ends directly under `Documents/`. The
+  folder `Documents/OnGo App/On-Go frontend api`, if it still exists, is a
+  stale non-git copy of mobile commit `b9c1606` and is not the app.
+- The mobile repo `https://github.com/sktle-niel/On-Go.git` is at `../On-Go`,
+  on branch `feature/rankings-evaluations`. That branch merged two lines of
+  work that had both been sitting uncommitted (the rankings, evaluations and
+  urgency-policy work, and the UI polish) and holds all three shared packages
+  — `on_go_design`, `on_go_shared` and `on_go_api` — recovered from the recycle
+  bin on 2026-09-16. `master` (`827a77c`, 2026-09-16) has the Step 10 Dart
+  contract, `HttpServiceRequestApi`, and booking and the client's quotes
+  screen going through the seam. As of 2026-09-28 the local branch is one
+  commit ahead of GitHub (`6642a95`, the mechanic Jobs screen through the
+  seam), not yet pushed.
+- The admin console is at `../On-Go-Console`
   (`https://github.com/sktle-niel/On-Go-Console.git`), first committed
   2026-09-16. It had never been under version control, and its seam package
   `on_go_console_backend` existed only in the recycle bin. It carries that
-  package itself and resolves the other three from `../On-Go/packages/`.
+  package itself and resolves the other three from `../On-Go/packages/`, so
+  the two front-end checkouts must stay siblings.
 - The integration guide for the front-end dev lives outside this repository,
-  in `Documents/On Go Documentation` (`API-Integration-Guide.md`, its `.docx`
+  in `../On Go Documentation` (`API-Integration-Guide.md`, its `.docx`
   and an `openapi.json`). Version 0.2.0, updated 2026-09-15 for Step 10 and
   10a. The `.docx` is rebuilt from the Markdown by saving an HTML rendering
   through Word, and `openapi.json` there has 50 paths.
